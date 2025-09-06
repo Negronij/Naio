@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Naio</title>
+  <link rel="icon" type="image/png" href="Naio.png">
+  <!-- SDK Firebase Modular -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
+    import { getAuth, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
+
+    // Config de tu proyecto Naio
+    const firebaseConfig = {
+      apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
+      authDomain: "naio1092ngs.firebaseapp.com",
+      projectId: "naio1092ngs",
+      storageBucket: "naio1092ngs.firebasestorage.app",
+      messagingSenderId: "874452485775",
+      appId: "1:874452485775:web:25e5ed586fcebe93e952fa",
+      measurementId: "G-JBK153N8XL"
+    };
+
+    // Inicializar Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    window.loginWithGoogle = () => {
+      const provider = new GoogleAuthProvider();
+      signInWithPopup(auth, provider)
+        .then((result) => {
+          document.getElementById('login').style.display = 'none';
+          document.getElementById('app').style.display = 'flex';
+        })
+        .catch((error) => {
+          console.error(error);
+          alert("Error al iniciar sesión con Google");
+        });
+    };
+  </script>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; font-family: Arial, sans-serif; display: flex; flex-direction: column; background: #0f0f1a; color: #fff; }
+    #splash { position: fixed; top:0; left:0; width:100%; height:100%; background:#0f0f1a; display:flex; flex-direction:column; justify-content:center; align-items:center; z-index:1000; animation: fadeOut 1s ease 2s forwards;}
+    #splash img { height:100px; margin-bottom:20px; animation: popIn 1s ease forwards;}
+    @keyframes popIn { 0% {transform:scale(0); opacity:0;} 100% {transform:scale(1); opacity:1;} }
+    @keyframes fadeOut { to {opacity:0; visibility:hidden;} }
+    #login { display:flex; justify-content:center; align-items:center; flex:1; flex-direction:column;}
+    #login button { background:#4285F4; color:#fff; border:none; padding:12px 20px; border-radius:8px; font-size:18px; cursor:pointer; display:flex; align-items:center; gap:10px;}
+    #login button img { height:24px; }
+    #app { display:none; flex-direction:column; height:100%; }
+    header { display:flex; align-items:center; padding:10px 20px; background:#1c1c2e; font-size:22px; font-weight:bold; flex-shrink:0; }
+    header img { height:35px; margin-right:12px; }
+    #videos { flex:1; display:grid; grid-template-columns:repeat(auto-fit, minmax(250px,1fr)); grid-auto-rows:1fr; gap:10px; padding:10px; box-sizing:border-box; }
+    .video-container { position:relative; background:#222; border-radius:12px; overflow:hidden; display:flex; justify-content:center; align-items:center; }
+    .video-container video { width:100%; height:100%; object-fit:contain; background:black; }
+    .username { position:absolute; bottom:8px; left:8px; background:rgba(0,0,0,0.6); padding:4px 10px; border-radius:6px; font-size:14px; }
+    .overlay { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) scale(0.5); background:rgba(0,0,0,0.7); padding:10px 20px; border-radius:12px; font-size:18px; opacity:0; transition:all 0.4s ease; }
+    .overlay.active { opacity:1; transform:translate(-50%,-50%) scale(1);}
+    .controls { display:flex; justify-content:center; gap:15px; padding:12px; background:#1c1c2e; flex-shrink:0; }
+    button.video-btn { background:#3a3a50; color:#fff; border:none; padding:12px 20px; border-radius:8px; cursor:pointer; font-size:16px; transition:background 0.3s; }
+    button.video-btn:hover { background:#56567a; }
+    .hidden { display:none; }
+    .fullscreen { grid-column:1/-1; grid-row:1/-1; }
+    .name-placeholder { font-size:22px; font-weight:bold; color:#bbb; }
+    body.muted { background:#2a0f0f; }
+  </style>
+</head>
+<body>
+  <div id="splash">
+    <img src="Naio.png" alt="Logo Naio">
+    <span>Naio</span>
+  </div>
+
+  <div id="login">
+    <button onclick="loginWithGoogle()">
+      <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" alt="Google Logo">
+      Iniciar sesión con Google
+    </button>
+  </div>
+
+  <div id="app">
+    <header>
+      <img src="Naio.png" alt="Logo Naio">
+      Naio
+    </header>
+
+    <div id="videos">
+      <div class="video-container" data-username="Usuario">
+        <video autoplay muted></video>
+        <div class="username">Usuario</div>
+        <div class="overlay"></div>
+        <div class="name-placeholder hidden">Usuario</div>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="toggleCamera" class="video-btn">📷 Cámara</button>
+      <button id="toggleMic" class="video-btn">🎤 Micrófono</button>
+    </div>
+  </div>
+
+  <script>
+    // Animación splash
+    setTimeout(()=>{ document.getElementById('splash').style.display='none'; document.getElementById('login').style.display='flex'; }, 2500);
+
+    const videoContainer = document.querySelector('.video-container');
+    const video = videoContainer.querySelector('video');
+    const overlay = videoContainer.querySelector('.overlay');
+    const namePlaceholder = videoContainer.querySelector('.name-placeholder');
+    const btnCamera = document.getElementById('toggleCamera');
+    const btnMic = document.getElementById('toggleMic');
+
+    let cameraOn = true;
+    let micOn = true;
+
+    navigator.mediaDevices.getUserMedia({ video:true, audio:true })
+      .then(stream => { video.srcObject = stream; })
+      .catch(err => console.error(err));
+
+    function showOverlay(msg) { overlay.textContent=msg; overlay.classList.add('active'); setTimeout(()=>overlay.classList.remove('active'),1500); }
+
+    btnCamera.addEventListener('click', ()=>{
+      cameraOn=!cameraOn;
+      video.style.display=cameraOn?'block':'none';
+      namePlaceholder.classList.toggle('hidden',cameraOn);
+      showOverlay(cameraOn?"Cámara activada":"Cámara apagada");
+    });
+
+    btnMic.addEventListener('click', ()=>{
+      micOn=!micOn;
+      const tracks=video.srcObject?.getAudioTracks();
+      if(tracks) tracks.forEach(t=>t.enabled=micOn);
+      document.body.classList.toggle('muted',!micOn);
+      showOverlay(micOn?"Micrófono activado":"Micrófono apagado");
+    });
+  </script>
+</body>
+</html>
