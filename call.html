@@ -235,9 +235,10 @@ window.toggleCam = (forceState = null) => {
     // Habilitar o deshabilitar la pista de video del stream local
     localStream.getVideoTracks().forEach(track => track.enabled = !isCamOff);
 
-    // Mostrar/ocultar el video y el nombre en tu propio cuadro
+    // Mostrar/ocultar el video en tu propio cuadro
     localVideo.style.display = isCamOff ? 'none' : 'block';
-    localDisplayName.style.display = isCamOff ? 'block' : 'none'; // Mostrar nombre si cámara apagada
+    // El nombre local ahora siempre es visible, no solo cuando la cámara está apagada
+    localDisplayName.style.display = 'block'; 
 
     const camButton = document.getElementById('camButton');
     const camIcon = camButton.querySelector('img');
@@ -307,16 +308,13 @@ function handleWebRTCSignaling(currentParticipants) {
           // Actualizar estado de la cámara
           if (user.isCamOff) {
               if (remoteVideo) remoteVideo.style.display = 'none'; // Ocultar video
-              if (remoteDisplayName) {
-                  remoteDisplayName.textContent = user.displayName; // Asegurar que el nombre se muestra
-                  remoteDisplayName.style.display = 'block';
-              }
               remoteVideoDiv.classList.add('camera-off'); // Aplicar estilo visual
           } else {
               if (remoteVideo) remoteVideo.style.display = 'block'; // Mostrar video
-              if (remoteDisplayName) remoteDisplayName.style.display = 'none'; // Ocultar nombre
               remoteVideoDiv.classList.remove('camera-off');
           }
+          // El nombre ya no se controla aquí su display, siempre será visible por CSS
+          // remoteDisplayName.style.display = 'block'; // Siempre visible por CSS
 
           // Actualizar estado del micrófono
           if (user.isMicMuted) {
@@ -366,11 +364,11 @@ function createPeerConnection(remoteUserUID, remoteUserName) {
     videoElement.playsinline = true; // Necesario para que funcione en algunos móviles
     videoElement.className = 'remote-video';
 
-    // Elemento para mostrar el nombre si la cámara está apagada
+    // Elemento para mostrar el nombre (ahora siempre visible por CSS)
     const displayNameElement = document.createElement('div');
-    displayNameElement.className = 'remote-display-name';
+    displayNameElement.className = 'remote-display-name'; // Clase para el nombre
     displayNameElement.textContent = remoteUserName;
-    displayNameElement.style.display = 'none'; // Oculto por defecto
+    // Ya no se controla el display aquí, el CSS lo hará 'block' por defecto
 
     // Icono para el estado del micrófono
     const micStatusIcon = document.createElement('img');
@@ -379,7 +377,7 @@ function createPeerConnection(remoteUserUID, remoteUserName) {
     micStatusIcon.className = 'status-icon remote-mic-status';
     micStatusIcon.style.display = 'none'; // Oculto por defecto
 
-    // Icono para el estado de la cámara
+    // Icono para el estado de la cámara (se mostrará en la parte superior derecha)
     const camStatusIcon = document.createElement('img');
     camStatusIcon.src = 'cam_off.png'; // Icono por defecto de cámara apagada
     camStatusIcon.alt = 'Cámara Apagada';
@@ -662,23 +660,23 @@ body {
     transform: scaleX(-1);
 }
 
-/* Nombre del usuario (visible cuando la cámara está apagada) */
+/* Nombre del usuario (ahora SIEMPRE visible en la esquina inferior izquierda) */
 #localDisplayName, .remote-display-name {
-  position: absolute; /* Posicionado sobre el video */
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%); /* Centra el texto */
-  font-size: 1.8em;
+  position: absolute;
+  bottom: 10px; /* Abajo */
+  left: 10px; /* A la izquierda */
+  font-size: 0.9em; /* Más pequeño */
   font-weight: 700;
   color: white;
-  text-shadow: 0 2px 5px rgba(0,0,0,0.6); /* Sombra para legibilidad */
-  z-index: 5; /* Asegura que esté sobre el video */
-  padding: 10px 20px;
-  background: rgba(0, 0, 0, 0.4);
-  border-radius: 10px;
-  display: none; /* Oculto por defecto */
+  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  z-index: 10; /* Asegura que esté sobre el video */
+  padding: 4px 8px; /* Padding pequeño */
+  background: rgba(0, 0, 0, 0.5); /* Fondo semitransparente */
+  border-radius: 6px;
+  display: block; /* SIEMPRE VISIBLE */
   text-align: center;
   pointer-events: none; /* No interfiere con eventos del ratón */
+  /* Removemos el transform: translate(-50%, -50%); para que se posicione directamente con bottom/left */
 }
 
 /* Iconos de estado (micrófono muteado, cámara apagada) */
@@ -692,14 +690,25 @@ body {
     border-radius: 50%; /* Forma circular */
     padding: 5px;
     z-index: 10; /* Sobre el video y nombre */
-    display: none; /* Oculto por defecto */
+    display: none; /* Oculto por defecto, se mostrará con JS */
     box-shadow: 0 2px 5px rgba(0,0,0,0.3);
 }
 
-/* Asegura que los iconos de estado no se reflejen */
+/* Posición específica para el icono de estado de la cámara */
 .status-icon.remote-cam-status, .status-icon.local-cam-status {
+    top: 10px; /* Arriba */
+    right: 10px; /* Derecha */
+    transform: none; /* Asegura que no haya transformaciones que lo muevan */
+}
+
+/* Posición específica para el icono de estado del micrófono */
+.status-icon.remote-mic-status, .status-icon.local-mic-status {
+    top: 10px; /* Arriba */
+    /* Lo movemos a la izquierda del icono de cámara si ambos están presentes */
+    right: 50px; /* Ajusta esto según el tamaño de tu icono de cámara */
     transform: none;
 }
+
 
 /* Controles de la llamada (botones) */
 .controls {
@@ -856,7 +865,10 @@ body {
   <div class="video-area">
     <div id="localVideoContainer">
       <video id="localVideo" autoplay playsinline></video>
-      <div id="localDisplayName" class="display-name"></div> <img id="localMicStatus" src="mic_off.png" alt="Muteado" class="status-icon local-mic-status"> <img id="localCamStatus" src="cam_off.png" alt="Cámara Apagada" class="status-icon local-cam-status"> </div>
+      <div id="localDisplayName" class="display-name"></div>
+      <img id="localMicStatus" src="mic_off.png" alt="Muteado" class="status-icon local-mic-status">
+      <img id="localCamStatus" src="cam_off.png" alt="Cámara Apagada" class="status-icon local-cam-status">
+    </div>
     <div id="remoteVideoContainer">
     </div>
   </div>
