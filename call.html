@@ -28,10 +28,22 @@ const db = getDatabase(app);
 
 let currentUser = null;
 let currentRoomCode = null;
-let participantsListener = null; // Para escuchar cambios en los participantes
+let participantsListener = null;
 
-// --- Manejo de Usuario y Redirección ---
+// --- WebRTC Variables ---
+let localStream = null;
+const peerConnections = {}; // Guarda las conexiones por UID del otro usuario
 
+const localVideo = document.getElementById('localVideo');
+const localDisplayName = document.getElementById('localDisplayName');
+const localMicStatus = document.getElementById('localMicStatus');
+const localCamStatus = document.getElementById('localCamStatus');
+const localVideoContainer = document.getElementById('localVideoContainer');
+
+let isMicMuted = false;
+let isCamOff = false;
+
+// --- Autenticación y Carga Inicial ---
 onAuthStateChanged(auth, (user) => {
   if (user) {
     currentUser = user;
@@ -40,34 +52,40 @@ onAuthStateChanged(auth, (user) => {
 
     if (!currentRoomCode) {
       alert("No se especificó un código de sala.");
-      window.location.href = "index.html"; // Volver al inicio
+      window.location.href = "index.html";
       return;
     }
 
     document.getElementById('roomCodeDisplay').textContent = currentRoomCode;
     joinRoom(currentRoomCode);
+
+    // Iniciar media y listeners después de autenticación y carga de sala
+    startMediaStream();
+    setupSignalingListener();
+    updateLocalMediaStatusInDB(); // Actualizar estado inicial en DB
   } else {
-    // Si el usuario cierra sesión mientras está en la página de llamada
     alert("Debes iniciar sesión para continuar.");
     window.location.href = "index.html";
   }
 });
 
 // --- Lógica de Sala y Participantes ---
-
 function joinRoom(codigo) {
   const salaRef = ref(db, 'salas/' + codigo);
   const usuariosSalaRef = ref(db, 'salas/' + codigo + '/usuarios');
 
-  // Añadir al usuario actual a la sala si no está ya
-  set(ref(db, 'salas/' + codigo + '/usuarios/' + currentUser.uid), currentUser.displayName)
+  // Añadir al usuario actual a la sala
+  set(ref(db, 'salas/' + codigo + '/usuarios/' + currentUser.uid), {
+    displayName: currentUser.displayName,
+    isMicMuted: false, // Estado inicial
+    isCamOff: false    // Estado inicial
+  })
     .then(() => {
       console.log(`Usuario ${currentUser.displayName} unido a la sala ${codigo}`);
-      updateParticipantListUI(); // Actualizar la lista inicial
-      // Escuchar cambios en la lista de usuarios
+      updateParticipantListUI();
+
       participantsListener = onValue(usuariosSalaRef, (snapshot) => {
         updateParticipantListUI();
-        // Aquí iría la lógica para iniciar/gestionar llamadas WebRTC
         handleWebRTCSignaling(snapshot.val());
       });
     })
@@ -84,19 +102,36 @@ function joinRoom(codigo) {
           alert("La sala ha sido cerrada por el creador.");
           leaveRoom();
       }
-  }, { onlyOnce: false }); // Escuchar continuamente
+  }, { onlyOnce: false });
 }
 
 function updateParticipantListUI() {
   const salaRef = ref(db, 'salas/' + currentRoomCode + '/usuarios');
   get(salaRef).then((snapshot) => {
     const participantesListDiv = document.getElementById('participantsListCall');
-    participantesListDiv.innerHTML = ''; // Limpiar lista anterior
+    participantesListDiv.innerHTML = '';
     if (snapshot.exists()) {
       const usuarios = snapshot.val();
       for (const uid in usuarios) {
+        const user = usuarios[uid];
         const div = document.createElement('div');
-        div.textContent = usuarios[uid];
+        div.textContent = user.displayName || 'Usuario Desconocido';
+        if (user.isMicMuted) {
+            const micOffIcon = document.createElement('img');
+            micOffIcon.src = 'mic_off.png';
+            micOffIcon.alt = 'Muteado';
+            micOffIcon.style.height = '16px';
+            micOffIcon.style.marginLeft = '5px';
+            div.appendChild(micOffIcon);
+        }
+        if (user.isCamOff) {
+            const camOffIcon = document.createElement('img');
+            camOffIcon.src = 'cam_off.png';
+            camOffIcon.alt = 'Cámara Apagada';
+            camOffIcon.style.height = '16px';
+            camOffIcon.style.marginLeft = '5px';
+            div.appendChild(camOffIcon);
+        }
         div.className = 'participant-call-item';
         participantesListDiv.appendChild(div);
       }
@@ -110,13 +145,20 @@ window.leaveRoom = () => {
     remove(ref(db, 'salas/' + currentRoomCode + '/usuarios/' + currentUser.uid))
       .then(() => {
         console.log(`Usuario ${currentUser.displayName} abandonó la sala ${currentRoomCode}`);
-        // Si el usuario era el creador, opcionalmente se podría cerrar la sala
-        // Aquí se detendría la escucha de participantes para esta sala
         if (participantsListener) {
           off(ref(db, 'salas/' + currentRoomCode + '/usuarios'), participantsListener);
           participantsListener = null;
         }
-        window.location.href = "index.html"; // Volver al lobby
+        // Cerrar todas las conexiones WebRTC
+        for (const uid in peerConnections) {
+            peerConnections[uid].close();
+            delete peerConnections[uid];
+        }
+        // Detener stream local
+        if (localStream) {
+            localStream.getTracks().forEach(track => track.stop());
+        }
+        window.location.href = "index.html";
       })
       .catch((error) => {
         console.error("Error al abandonar la sala:", error);
@@ -124,104 +166,224 @@ window.leaveRoom = () => {
         window.location.href = "index.html";
       });
   } else {
-    window.location.href = "index.html"; // Si no hay sesión o código, volver al inicio
+    window.location.href = "index.html";
   }
 }
 
-// --- Lógica de WebRTC (¡AQUÍ ES DONDE NECESITAS TRABAJAR!) ---
-
-// --- ESTA PARTE ES UN ESQUELETO Y NECESITA SER COMPLETADA ---
-
-// Obteniendo acceso a cámara y micrófono
-let localStream = null;
-const localVideo = document.getElementById('localVideo');
-const remoteVideoContainer = document.getElementById('remoteVideoContainer'); // Contenedor para videos remotos
+// --- Lógica de Medios Locales (Cámara/Micrófono) ---
 
 async function startMediaStream() {
   try {
     localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
     localVideo.srcObject = localStream;
-    localVideo.muted = true; // Silenciar nuestro propio audio para evitar eco
+    localVideo.muted = true;
+    localDisplayName.textContent = currentUser.displayName; // Mostrar tu nombre
     console.log("Stream de medios iniciado.");
+
+    // Asegurarse de que los estados iniciales se apliquen
+    toggleMic(isMicMuted);
+    toggleCam(isCamOff);
+
   } catch (error) {
     console.error("Error al acceder a la cámara o micrófono:", error);
     alert("No se pudo acceder a tu cámara o micrófono. Por favor, verifica los permisos.");
+    // Si no se puede acceder, la cámara estará "apagada" por defecto
+    isCamOff = true;
+    toggleCam(true);
+    updateLocalMediaStatusInDB();
   }
 }
 
-// Objeto para manejar las conexiones WebRTC
-const peerConnections = {}; // Guarda las conexiones por UID del otro usuario
-let signalingChannel = null; // Canal de señalización (lo implementaremos con Firebase RTDB)
+// Actualizar el estado de mi cámara/micrófono en Firebase
+function updateLocalMediaStatusInDB() {
+    if (!currentUser || !currentRoomCode) return;
+    set(ref(db, `salas/${currentRoomCode}/usuarios/${currentUser.uid}/isMicMuted`), isMicMuted);
+    set(ref(db, `salas/${currentRoomCode}/usuarios/${currentUser.uid}/isCamOff`), isCamOff);
+}
+
+window.toggleMic = (forceState = null) => {
+  isMicMuted = forceState !== null ? forceState : !isMicMuted;
+  localStream.getAudioTracks().forEach(track => track.enabled = !isMicMuted);
+
+  const micButton = document.getElementById('micButton');
+  const micIcon = micButton.querySelector('img');
+
+  micIcon.src = isMicMuted ? 'mic_off.png' : 'mic.png';
+  micButton.title = isMicMuted ? 'Activar Audio' : 'Mutear Audio';
+
+  // Mostrar/ocultar estado del micrófono en mi cuadro de video
+  localMicStatus.style.display = isMicMuted ? 'block' : 'none';
+  if (isMicMuted) {
+      localVideoContainer.classList.add('muted'); // Añadir clase para color rojizo
+  } else {
+      localVideoContainer.classList.remove('muted');
+  }
+
+  updateLocalMediaStatusInDB();
+  // Notificar a otros pares sobre el cambio de estado (a través de DB, para que actualicen su UI)
+  sendSignalingMessageToAll({ type: 'user_state_update', uid: currentUser.uid, isMicMuted: isMicMuted });
+};
+
+window.toggleCam = (forceState = null) => {
+  isCamOff = forceState !== null ? forceState : !isCamOff;
+  localStream.getVideoTracks().forEach(track => track.enabled = !isCamOff);
+
+  localVideo.style.display = isCamOff ? 'none' : 'block';
+  localDisplayName.style.display = isCamOff ? 'block' : 'none'; // Mostrar nombre si cámara apagada
+
+  const camButton = document.getElementById('camButton');
+  const camIcon = camButton.querySelector('img');
+
+  camIcon.src = isCamOff ? 'cam_off.png' : 'cam.png';
+  camButton.title = isCamOff ? 'Encender Cámara' : 'Apagar Cámara';
+
+  // Mostrar/ocultar estado de la cámara en mi cuadro de video
+  localCamStatus.style.display = isCamOff ? 'block' : 'none';
+
+  updateLocalMediaStatusInDB();
+  // Notificar a otros pares sobre el cambio de estado
+  sendSignalingMessageToAll({ type: 'user_state_update', uid: currentUser.uid, isCamOff: isCamOff });
+};
+
+// --- WebRTC Signaling and Connections ---
+
+// Envía un mensaje de señalización a todos los participantes en la sala
+function sendSignalingMessageToAll(message) {
+    if (!currentRoomCode || !currentUser) return;
+    const roomUsersRef = ref(db, `salas/${currentRoomCode}/usuarios`);
+    get(roomUsersRef).then(snapshot => {
+        if (snapshot.exists()) {
+            const users = snapshot.val();
+            for (const uid in users) {
+                if (uid !== currentUser.uid) { // No enviar mensaje a uno mismo
+                    sendSignalingMessage(uid, message);
+                }
+            }
+        }
+    }).catch(error => console.error("Error obteniendo usuarios para señalización a todos:", error));
+}
+
 
 function handleWebRTCSignaling(currentParticipants) {
-  console.log("Participantes actuales:", currentParticipants);
-
-  // Lógica para:
-  // 1. Iniciar llamadas con nuevos participantes
-  // 2. Cerrar conexiones con participantes que se van
-  // 3. Intercambiar señales (ofertas, respuestas, candidatos ICE)
-
   if (!currentParticipants) return;
 
   const participantUIDs = Object.keys(currentParticipants);
 
-  // Para cada participante, asegúrate de que haya una conexión y señalización
+  // 1. Iniciar o mantener conexiones con participantes activos
   participantUIDs.forEach(uid => {
-    if (uid === currentUser.uid) return; // No creamos conexión con nosotros mismos
+    if (uid === currentUser.uid) return;
 
     if (!peerConnections[uid]) {
-      console.log(`Iniciando conexión con ${currentParticipants[uid]} (${uid})`);
-      // Crear nueva conexión y manejador de señales
-      peerConnections[uid] = createPeerConnection(uid);
-      // Aquí deberías enviar la oferta inicial si eres el primero en conectarte
-      // o responder si recibes una oferta.
-      // Esto requiere una lógica más compleja de intercambio de señales.
+      console.log(`Iniciando conexión con ${currentParticipants[uid].displayName} (${uid})`);
+      peerConnections[uid] = createPeerConnection(uid, currentParticipants[uid].displayName);
+      // Cuando un nuevo usuario se une, enviar una oferta.
+      // Esto es crucial para iniciar la conexión cuando alguien entra.
+      peerConnections[uid].createOffer()
+        .then(offer => peerConnections[uid].setLocalDescription(offer))
+        .then(() => sendSignalingMessage(uid, { type: 'offer', sdp: peerConnections[uid].localDescription }))
+        .catch(error => console.error("Error creando oferta inicial:", error));
     }
   });
 
-  // Eliminar conexiones con usuarios que ya no están en la sala
+  // 2. Eliminar conexiones con usuarios que ya no están en la sala
   for (const uid in peerConnections) {
     if (!participantUIDs.includes(uid)) {
-      console.log(`Cerrando conexión con ${currentParticipants[uid] || 'un usuario'} (${uid})`);
+      console.log(`Cerrando conexión con un usuario (${uid}) que abandonó.`);
       peerConnections[uid].close();
       delete peerConnections[uid];
-      // Eliminar el video del usuario remoto de la UI
-      const remoteVideo = document.getElementById(`remoteVideo-${uid}`);
-      if (remoteVideo) {
-        remoteVideo.remove();
+      const remoteVideoDiv = document.getElementById(`remoteVideoContainer-${uid}`);
+      if (remoteVideoDiv) {
+        remoteVideoDiv.remove();
       }
     }
   }
+
+  // 3. Actualizar el estado de los medios remotos
+  for (const uid in currentParticipants) {
+      if (uid === currentUser.uid) continue;
+      const user = currentParticipants[uid];
+      const remoteVideoDiv = document.getElementById(`remoteVideoContainer-${uid}`);
+      if (remoteVideoDiv) {
+          const remoteVideo = remoteVideoDiv.querySelector('video');
+          const remoteDisplayName = remoteVideoDiv.querySelector('.remote-display-name');
+          const remoteMicStatus = remoteVideoDiv.querySelector('.remote-mic-status');
+          const remoteCamStatus = remoteVideoDiv.querySelector('.remote-cam-status');
+
+          if (user.isCamOff) {
+              if (remoteVideo) remoteVideo.style.display = 'none';
+              if (remoteDisplayName) remoteDisplayName.style.display = 'block';
+              remoteVideoDiv.classList.add('camera-off');
+          } else {
+              if (remoteVideo) remoteVideo.style.display = 'block';
+              if (remoteDisplayName) remoteDisplayName.style.display = 'none';
+              remoteVideoDiv.classList.remove('camera-off');
+          }
+
+          if (user.isMicMuted) {
+              remoteMicStatus.style.display = 'block';
+              remoteVideoDiv.classList.add('muted'); // Color rojizo para el usuario muteado
+          } else {
+              remoteMicStatus.style.display = 'none';
+              remoteVideoDiv.classList.remove('muted');
+          }
+
+          if (user.isCamOff) {
+              remoteCamStatus.style.display = 'block';
+          } else {
+              remoteCamStatus.style.display = 'none';
+          }
+      }
+  }
 }
 
-function createPeerConnection(remoteUserUID) {
-  // Configurar RTCPeerConnection
+function createPeerConnection(remoteUserUID, remoteUserName) {
   const pc = new RTCPeerConnection({
     iceServers: [
-      { urls: 'stun:stun.l.google.com:19302' }, // Servidor STUN público
-      // Se pueden añadir servidores TURN para NAT traversal más robusto
+      { urls: 'stun:stun.l.google.com:19302' },
     ]
   });
 
-  // Manejar cuando llega un stream remoto (de otro usuario)
+  // Crear contenedor para el video remoto
+  const remoteVideoDiv = document.createElement('div');
+  remoteVideoDiv.id = `remoteVideoContainer-${remoteUserUID}`;
+  remoteVideoDiv.className = 'remote-video-container';
+
+  const videoElement = document.createElement('video');
+  videoElement.id = `remoteVideo-${remoteUserUID}`;
+  videoElement.autoplay = true;
+  videoElement.playsinline = true;
+  videoElement.className = 'remote-video';
+
+  const displayNameElement = document.createElement('div');
+  displayNameElement.className = 'remote-display-name';
+  displayNameElement.textContent = remoteUserName;
+  displayNameElement.style.display = 'none'; // Oculto por defecto
+
+  const micStatusIcon = document.createElement('img');
+  micStatusIcon.src = 'mic_off.png';
+  micStatusIcon.alt = 'Mic Muteado';
+  micStatusIcon.className = 'status-icon remote-mic-status';
+  micStatusIcon.style.display = 'none';
+
+  const camStatusIcon = document.createElement('img');
+  camStatusIcon.src = 'cam_off.png';
+  camStatusIcon.alt = 'Cámara Apagada';
+  camStatusIcon.className = 'status-icon remote-cam-status';
+  camStatusIcon.style.display = 'none';
+
+  remoteVideoDiv.appendChild(videoElement);
+  remoteVideoDiv.appendChild(displayNameElement);
+  remoteVideoDiv.appendChild(micStatusIcon);
+  remoteVideoDiv.appendChild(camStatusIcon);
+  document.getElementById('remoteVideoContainer').appendChild(remoteVideoDiv);
+
   pc.ontrack = (event) => {
-    console.log(`Track remoto recibido de ${remoteUserUID}`);
-    const remoteStream = event.streams[0];
-    const videoElement = document.createElement('video');
-    videoElement.id = `remoteVideo-${remoteUserUID}`;
-    videoElement.srcObject = remoteStream;
-    videoElement.autoplay = true;
-    videoElement.playsinline = true;
-    videoElement.controls = true; // Opcional: mostrar controles de video
-    videoElement.className = 'remote-video';
-    remoteVideoContainer.appendChild(videoElement);
+    console.log(`Track remoto recibido de ${remoteUserName}`);
+    videoElement.srcObject = event.streams[0];
   };
 
-  // Manejar candidatos ICE (información de red)
   pc.onicecandidate = (event) => {
     if (event.candidate) {
-      console.log("Enviando candidato ICE:", event.candidate);
-      // Enviar este candidato al otro usuario a través del canal de señalización
       sendSignalingMessage(remoteUserUID, {
         type: 'candidate',
         candidate: event.candidate
@@ -235,113 +397,134 @@ function createPeerConnection(remoteUserUID) {
       pc.addTrack(track, localStream);
     });
   } else {
-    console.warn("localStream no está disponible al crear PeerConnection.");
+    console.warn("localStream no está disponible al crear PeerConnection para", remoteUserName);
   }
 
   return pc;
 }
 
-// Función para enviar mensajes de señalización a un usuario específico
 function sendSignalingMessage(targetUserUID, message) {
-  if (!currentRoomCode) return;
-  // Usar Firebase RTDB para enviar el mensaje a un nodo específico
+  if (!currentRoomCode || !currentUser) return;
   const messagesRef = ref(db, `salas/${currentRoomCode}/signaling/${targetUserUID}/${currentUser.uid}`);
   set(messagesRef, message)
-    .then(() => console.log(`Mensaje de señalización enviado a ${targetUserUID}:`, message))
     .catch(error => console.error("Error enviando mensaje de señalización:", error));
 }
 
-// Configurar listener para recibir mensajes de señalización
 function setupSignalingListener() {
-  if (!currentRoomCode) return;
-  const signalingRoomRef = ref(db, `salas/${currentRoomCode}/signaling`);
-
-  // Escuchar mensajes para nuestro UID
+  if (!currentRoomCode || !currentUser) return;
   const mySignalingRef = ref(db, `salas/${currentRoomCode}/signaling/${currentUser.uid}`);
+
   onValue(mySignalingRef, async (snapshot) => {
     if (snapshot.exists()) {
-      const message = snapshot.val();
-      const senderUID = Object.keys(snapshot.val())[0]; // El UID del que envía el mensaje
-      const signalingMessage = message[senderUID];
+      const messages = snapshot.val();
+      for (const senderUID in messages) {
+        const signalingMessage = messages[senderUID];
 
-      console.log(`Mensaje de señalización recibido de ${senderUID}:`, signalingMessage);
-
-      // Procesar el mensaje
-      if (signalingMessage.type === 'offer') {
-        // Si recibimos una oferta, creamos la conexión si no existe y respondemos
-        if (!peerConnections[senderUID]) {
-          peerConnections[senderUID] = createPeerConnection(senderUID);
-        }
-        await peerConnections[senderUID].setRemoteDescription(new RTCSessionDescription(signalingMessage.sdp));
-        const answer = await peerConnections[senderUID].createAnswer();
-        await peerConnections[senderUID].setLocalDescription(answer);
-        sendSignalingMessage(senderUID, { type: 'answer', sdp: peerConnections[senderUID].localDescription });
-
-      } else if (signalingMessage.type === 'answer') {
-        // Si recibimos una respuesta, la aplicamos a la conexión existente
-        if (peerConnections[senderUID]) {
-          await peerConnections[senderUID].setRemoteDescription(new RTCSessionDescription(signalingMessage.sdp));
-        } else {
-          console.warn("Recibida respuesta sin conexión previa para", senderUID);
+        let pc = peerConnections[senderUID];
+        if (!pc) {
+            // Si el mensaje es una oferta, creamos la PeerConnection
+            if (signalingMessage.type === 'offer') {
+                const senderData = await get(ref(db, `salas/${currentRoomCode}/usuarios/${senderUID}`));
+                if (senderData.exists()) {
+                    pc = createPeerConnection(senderUID, senderData.val().displayName || 'Usuario Desconocido');
+                    peerConnections[senderUID] = pc;
+                } else {
+                    console.warn("Datos del remitente no encontrados para oferta:", senderUID);
+                    continue;
+                }
+            } else {
+                console.warn(`Mensaje de ${signalingMessage.type} recibido antes de que la PeerConnection fuera creada para ${senderUID}.`);
+                continue;
+            }
         }
 
-      } else if (signalingMessage.type === 'candidate') {
-        // Si recibimos un candidato ICE, lo añadimos a la conexión
-        if (peerConnections[senderUID]) {
-          await peerConnections[senderUID].addIceCandidate(new RTCIceCandidate(signalingMessage.candidate));
-        } else {
-          console.warn("Recibido candidato ICE sin conexión previa para", senderUID);
-        }
-      } else if (signalingMessage.type === 'join') {
-          // Cuando un nuevo usuario se une, se le puede enviar una oferta
-          if (!peerConnections[senderUID]) {
-              peerConnections[senderUID] = createPeerConnection(senderUID);
-              const offer = await peerConnections[senderUID].createOffer();
-              await peerConnections[senderUID].setLocalDescription(offer);
-              sendSignalingMessage(senderUID, { type: 'offer', sdp: peerConnections[senderUID].localDescription });
+        try {
+          if (signalingMessage.type === 'offer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(signalingMessage.sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            sendSignalingMessage(senderUID, { type: 'answer', sdp: pc.localDescription });
+          } else if (signalingMessage.type === 'answer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(signalingMessage.sdp));
+          } else if (signalingMessage.type === 'candidate') {
+            await pc.addIceCandidate(new RTCIceCandidate(signalingMessage.candidate));
+          } else if (signalingMessage.type === 'user_state_update') {
+              // Esto actualiza el estado local de los iconos, la UI se actualiza con handleWebRTCSignaling
+              console.log(`Estado de usuario ${senderUID} actualizado:`, signalingMessage);
           }
-      }
+        } catch (error) {
+          console.error(`Error procesando mensaje de señalización de ${senderUID} (${signalingMessage.type}):`, error);
+        }
 
-      // Una vez procesado, eliminamos el mensaje de la cola de señalización
-      remove(ref(db, `salas/${currentRoomCode}/signaling/${currentUser.uid}/${senderUID}`));
+        // Eliminar el mensaje una vez procesado
+        remove(ref(db, `salas/${currentRoomCode}/signaling/${currentUser.uid}/${senderUID}`));
+      }
     }
   });
 }
-
-
-// Iniciar todo al cargar la página y autenticarse
-window.onload = () => {
-  const urlParams = new URLSearchParams(window.location.search);
-  const roomCodeFromUrl = urlParams.get('codigo');
-
-  if (!roomCodeFromUrl) {
-    alert("Error: No se especificó un código de sala.");
-    window.location.href = "index.html";
-    return;
-  }
-
-  document.getElementById('roomCodeDisplay').textContent = roomCodeFromUrl;
-  currentRoomCode = roomCodeFromUrl;
-
-  // Iniciar el stream de medios (cámara/micrófono)
-  startMediaStream();
-  // Configurar el listener para recibir mensajes de señalización
-  setupSignalingListener();
-};
 
 // Limpiar listeners al salir de la página
 window.addEventListener('beforeunload', () => {
     if (participantsListener) {
         off(ref(db, 'salas/' + currentRoomCode + '/usuarios'), participantsListener);
     }
-    // Aquí también se podrían cerrar todas las conexiones WebRTC activas
+    // Cerrar todas las conexiones WebRTC activas
     for (const uid in peerConnections) {
         peerConnections[uid].close();
     }
-    // Podríamos eliminar al usuario de la sala aquí si no queremos que se quede "conectado"
-    // pero leaveRoom ya lo hace.
+    // Detener el stream local
+    if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+    }
+    // Eliminar el estado de medios del usuario actual al salir de la página
+    if (currentUser && currentRoomCode) {
+        remove(ref(db, 'salas/' + currentRoomCode + '/usuarios/' + currentUser.uid));
+    }
 });
 
+
+// --- Funciones auxiliares para el modal de participantes en call.html ---
+function verParticipantesModal() {
+    const participantesListDiv = document.getElementById('participantsListCall');
+    participantesListDiv.innerHTML = ''; // Limpiar lista anterior
+
+    const salaRef = ref(db, 'salas/' + currentRoomCode + '/usuarios');
+    get(salaRef).then((snapshot) => {
+        if (snapshot.exists()) {
+            const usuarios = snapshot.val();
+            for (const uid in usuarios) {
+                const user = usuarios[uid];
+                const div = document.createElement('div');
+                div.textContent = user.displayName || 'Usuario Desconocido';
+                if (user.isMicMuted) {
+                    const micOffIcon = document.createElement('img');
+                    micOffIcon.src = 'mic_off.png';
+                    micOffIcon.alt = 'Muteado';
+                    micOffIcon.style.height = '16px';
+                    micOffIcon.style.marginLeft = '5px';
+                    div.appendChild(micOffIcon);
+                }
+                if (user.isCamOff) {
+                    const camOffIcon = document.createElement('img');
+                    camOffIcon.src = 'cam_off.png';
+                    camOffIcon.alt = 'Cámara Apagada';
+                    camOffIcon.style.height = '16px';
+                    camOffIcon.style.marginLeft = '5px';
+                    div.appendChild(camOffIcon);
+                }
+                div.className = 'participant-call-item';
+                participantesListDiv.appendChild(div);
+            }
+            document.getElementById('participantsModalCall').style.display = 'flex';
+        } else {
+            alert("No se encontraron participantes para esta sala.");
+        }
+    }).catch(error => console.error("Error al obtener participantes:", error));
+}
+
+function cerrarParticipantesModal() {
+    document.getElementById('participantsModalCall').style.display = 'none';
+}
 </script>
 
 <style>
@@ -351,6 +534,7 @@ window.addEventListener('beforeunload', () => {
   --text-light: #e0e0e0;
   --card-background: rgba(255, 255, 255, 0.08);
   --participant-bg: rgba(255, 255, 255, 0.1);
+  --muted-red: #e53935; /* Color rojizo para indicar muteado */
 }
 
 body {
@@ -361,9 +545,9 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start; /* Alinea al inicio para que los videos tengan espacio */
+  justify-content: flex-start;
   min-height: 100vh;
-  overflow-y: auto; /* Permitir scroll si hay muchos videos */
+  overflow-y: auto;
   padding: 20px;
   box-sizing: border-box;
 }
@@ -377,6 +561,7 @@ body {
   padding: 10px 20px;
   background-color: rgba(255, 255, 255, 0.05);
   border-radius: 10px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
 }
 
 .header .room-info {
@@ -391,6 +576,7 @@ body {
   background-color: var(--primary-color);
   padding: 8px 15px;
   border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
 }
 
 .call-container {
@@ -399,77 +585,105 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 20px;
-  max-width: 1200px; /* Ancho máximo para el área de video */
+  max-width: 1200px;
 }
 
 .video-area {
   width: 100%;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); /* Layout adaptable */
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); /* Min ancho de 280px */
   gap: 15px;
   justify-content: center;
-  align-items: start; /* Alinea los videos al inicio */
+  align-items: start;
 }
 
-#localVideoContainer {
-  position: relative; /* Para posicionar el overlay de "Tú" */
+/* Contenedor de video local */
+#localVideoContainer, .remote-video-container {
+  position: relative;
   background-color: var(--participant-bg);
-  border-radius: 10px;
+  border-radius: 15px; /* Bordes más redondeados */
   overflow: hidden;
   display: flex;
-  justify-content: center;
-  align-items: center;
-  aspect-ratio: 16 / 9; /* Relación de aspecto para el video */
-  min-width: 250px; /* Mínimo tamaño */
-  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-}
-
-#localVideo {
-  width: 100%;
-  height: 100%;
-  object-fit: cover; /* Cubre el contenedor sin distorsionar */
-  transform: scaleX(-1); /* Voltear horizontalmente para ver como en un espejo */
-}
-
-#remoteVideoContainer {
-  display: contents; /* Permite que los videos remotos se fusionen en el grid */
-}
-
-.remote-video {
-  width: 100%;
-  height: auto; /* Ajusta la altura automáticamente */
-  background-color: var(--participant-bg);
-  border-radius: 10px;
-  overflow: hidden;
-  display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
   aspect-ratio: 16 / 9;
-  min-width: 250px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+  min-width: 280px;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+  transition: background-color 0.3s ease, border 0.3s ease;
+  border: 2px solid transparent; /* Borde por defecto */
 }
 
-/* Estilos para el overlay de "Tú" */
-#localVideoContainer::before {
-  content: "Tú";
-  position: absolute;
-  bottom: 10px;
-  left: 10px;
-  background: rgba(0, 0, 0, 0.6);
-  color: white;
-  padding: 5px 10px;
-  border-radius: 5px;
-  font-size: 14px;
-  font-weight: 700;
-  z-index: 10;
+/* Efecto rojizo cuando el usuario está muteado */
+#localVideoContainer.muted, .remote-video-container.muted {
+    background-color: rgba(var(--muted-red), 0.3);
+    border: 2px solid var(--muted-red);
 }
+
+/* Efecto para cámara apagada (opcional, si quieres un fondo diferente) */
+#localVideoContainer.camera-off, .remote-video-container.camera-off {
+    background-color: rgba(100, 100, 100, 0.2);
+}
+
+
+#localVideo, .remote-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1); /* Voltear horizontalmente solo para video local y remoto */
+  display: block; /* Visible por defecto */
+}
+.remote-video-container .remote-video {
+    transform: scaleX(-1); /* También voltear videos remotos para consistencia */
+}
+
+
+#localDisplayName, .remote-display-name {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 1.8em;
+  font-weight: 700;
+  color: white;
+  text-shadow: 0 2px 5px rgba(0,0,0,0.6);
+  z-index: 5;
+  padding: 10px 20px;
+  background: rgba(0, 0, 0, 0.4);
+  border-radius: 10px;
+  display: none; /* Oculto por defecto */
+  text-align: center;
+  pointer-events: none; /* Para que no interfiera con el video subyacente */
+}
+
+/* Iconos de estado (mute, cámara apagada) */
+.status-icon {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    height: 30px; /* Tamaño del icono */
+    width: 30px;
+    background-color: rgba(0, 0, 0, 0.5);
+    border-radius: 50%;
+    padding: 5px;
+    z-index: 10;
+    display: none; /* Oculto por defecto */
+    box-shadow: 0 2px 5px rgba(0,0,0,0.3);
+}
+
+/* Asegurar que el icono de cámara apagada no esté volteado */
+.status-icon.remote-cam-status, .status-icon.local-cam-status {
+    transform: none;
+}
+
 
 .controls {
   width: 100%;
   display: flex;
   justify-content: center;
   align-items: center;
-  gap: 20px;
+  flex-wrap: wrap; /* Permitir que los botones se envuelvan en pantallas pequeñas */
+  gap: 15px;
   margin-top: 20px;
 }
 
@@ -480,11 +694,13 @@ body {
   border: none;
   border-radius: 10px;
   padding: 12px 25px;
-  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  transition: transform 0.3s ease, box-shadow 0.3s ease, background-color 0.3s ease;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
   display: flex;
   align-items: center;
   gap: 8px;
+  color: var(--text-light); /* Color de texto por defecto */
+  background-color: var(--card-background); /* Fondo por defecto */
 }
 
 .controls button:hover {
@@ -492,8 +708,13 @@ body {
   box-shadow: 0 4px 15px rgba(255, 111, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.3);
 }
 
+.controls button img {
+    height: 24px; /* Tamaño de los iconos PNG */
+    width: 24px;
+}
+
 .controls .leave-button {
-  background-color: #e53935; /* Rojo */
+  background-color: #e53935;
   color: white;
 }
 .controls .leave-button:hover {
@@ -501,16 +722,7 @@ body {
   box-shadow: 0 4px 15px rgba(229, 57, 53, 0.4), 0 6px 20px rgba(0, 0, 0, 0.3);
 }
 
-.controls .mute-button, .controls .video-button {
-  background-color: var(--card-background);
-  color: var(--text-light);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-}
-.controls .mute-button:hover, .controls .video-button:hover {
-  background-color: rgba(255, 255, 255, 0.2);
-}
-
-/* Estilos para el modal de participantes (puede ser similar al de index.html) */
+/* Modal de participantes */
 #participantsModalCall {
   position: fixed;
   top: 0;
@@ -565,10 +777,12 @@ body {
   color: var(--text-light);
   text-align: left;
   transition: background-color 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* Para iconos de estado */
 }
-
-.participant-call-item:hover {
-  background: rgba(255, 255, 255, 0.15);
+.participant-call-item img {
+    margin-left: 10px;
 }
 
 #participantsModalCall .modal-content button {
@@ -591,10 +805,14 @@ body {
     gap: 15px;
   }
   .video-area {
-    grid-template-columns: 1fr; /* Un solo video por fila en móviles */
+    grid-template-columns: 1fr;
   }
   .controls {
-    flex-wrap: wrap; /* Los controles se apilan si no caben */
+    flex-wrap: wrap;
+  }
+  .controls button {
+    width: 100%; /* Botones de control ocupan todo el ancho */
+    justify-content: center;
   }
 }
 </style>
@@ -611,6 +829,9 @@ body {
   <div class="video-area">
     <div id="localVideoContainer">
       <video id="localVideo" autoplay playsinline></video>
+      <div id="localDisplayName" class="display-name"></div>
+      <img id="localMicStatus" src="mic_off.png" alt="Muteado" class="status-icon local-mic-status">
+      <img id="localCamStatus" src="cam_off.png" alt="Cámara Apagada" class="status-icon local-cam-status">
     </div>
 
     <div id="remoteVideoContainer">
@@ -618,13 +839,13 @@ body {
   </div>
 
   <div class="controls">
-    <button class="mute-button">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a6 6 0 0 0-6 6v7a6 6 0 0 0 12 0v-7a6 6 0 0 0-6-6z"></path><path d="M19 10v4a6 6 0 0 1-12 0v-4"></path><path d="M12 17v5"></path><path d="M8 21h8"></path></svg>
-      Mutear Audio
+    <button id="micButton" onclick="toggleMic()" title="Mutear Audio">
+      <img src="mic.png" alt="Micrófono">
+      <span>Audio</span>
     </button>
-    <button class="video-button">
-      <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 6a2 2 0 0 0-2-2h-14a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2z"></path><path d="M11 16l-4 4"></path><path d="M15 16l4 4"></path></svg>
-      Detener Video
+    <button id="camButton" onclick="toggleCam()" title="Apagar Cámara">
+      <img src="cam.png" alt="Cámara">
+      <span>Video</span>
     </button>
   </div>
 </div>
@@ -636,34 +857,6 @@ body {
     <button onclick="cerrarParticipantesModal()">Cerrar</button>
   </div>
 </div>
-
-<script>
-// --- Funciones auxiliares para el modal de participantes en call.html ---
-function verParticipantesModal() {
-    const participantesListDiv = document.getElementById('participantsListCall');
-    participantesListDiv.innerHTML = ''; // Limpiar lista anterior
-
-    const salaRef = ref(db, 'salas/' + currentRoomCode + '/usuarios');
-    get(salaRef).then((snapshot) => {
-        if (snapshot.exists()) {
-            const usuarios = snapshot.val();
-            for (const uid in usuarios) {
-                const div = document.createElement('div');
-                div.textContent = usuarios[uid];
-                div.className = 'participant-call-item';
-                participantesListDiv.appendChild(div);
-            }
-            document.getElementById('participantsModalCall').style.display = 'flex';
-        } else {
-            alert("No se encontraron participantes para esta sala.");
-        }
-    }).catch(error => console.error("Error al obtener participantes:", error));
-}
-
-function cerrarParticipantesModal() {
-    document.getElementById('participantsModalCall').style.display = 'none';
-}
-</script>
 
 </body>
 </html>
