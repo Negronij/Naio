@@ -8,9 +8,9 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
-import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
+import { getDatabase, ref, onChildAdded, onValue, set, push, remove } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
 
-// Firebase
+// Config Firebase
 const firebaseConfig = {
   apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
   authDomain: "naio1092ngs.firebaseapp.com",
@@ -24,45 +24,206 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
+// Usuario logueado
 let user;
-auth.onAuthStateChanged(u => {
+auth.onAuthStateChanged(u=>{
   if(!u) window.location.href="index.html";
-  else user = u;
+  else user=u;
 });
 
-// Código de sala
+// Código de sala desde query string
 const urlParams = new URLSearchParams(window.location.search);
 const codigoSala = urlParams.get('codigo');
 if(!codigoSala) alert("Código de sala no especificado");
-window.codigoSala = codigoSala;
 
+// Config WebRTC
+const localConnections = {}; // peerId => RTCPeerConnection
+const remoteStreams = {};    // peerId => MediaStream
+const videoElements = {};    // peerId => video HTML element
+
+let localStream;
+let micOn=true, cameraOn=true;
+
+// Obtener cámara y micrófono
+async function initMedia() {
+  localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
+  addVideo(user.displayName, localStream, true);
+}
+initMedia();
+
+// UI
+const videosDiv = document.getElementById('videos');
+const extraDiv = document.getElementById('extraUsers');
+const showMoreBtn = document.getElementById('showMore');
+document.getElementById('salaCodigo').textContent = codigoSala;
+
+document.getElementById('toggleCamera').addEventListener('click',()=>{
+  cameraOn=!cameraOn;
+  localStream.getVideoTracks().forEach(t=>t.enabled=cameraOn);
+  const localVid = videosDiv.querySelector('video');
+  if(localVid) localVid.style.display=cameraOn?'block':'none';
+});
+document.getElementById('toggleMic').addEventListener('click',()=>{
+  micOn=!micOn;
+  localStream.getAudioTracks().forEach(t=>t.enabled=micOn);
+  document.body.classList.toggle('muted',!micOn);
+});
+showMoreBtn.addEventListener('click',()=>{
+  extraDiv.style.display = extraDiv.style.display==='flex'?'none':'flex';
+  showMoreBtn.textContent = extraDiv.style.display==='flex'?'Cerrar':'Más';
+});
+
+// Crear o unirse a sala
+const salaRef = ref(db,'salas/'+codigoSala+'/usuarios/'+user.uid);
+set(salaRef,user.displayName);
+window.addEventListener('beforeunload',()=>remove(salaRef));
+
+// Agregar video local o placeholder
+function addVideo(nombre, stream=null, isLocal=false){
+  const container = document.createElement('div');
+  container.classList.add('video-container');
+
+  let vid, placeholder;
+  if(stream){
+    vid = document.createElement('video');
+    vid.autoplay=true;
+    vid.muted=isLocal;
+    vid.srcObject=stream;
+    container.appendChild(vid);
+  } else {
+    placeholder = document.createElement('div');
+    placeholder.classList.add('name-placeholder');
+    const avatar = document.createElement('div');
+    avatar.classList.add('avatar');
+    avatar.textContent = nombre[0].toUpperCase();
+    placeholder.appendChild(avatar);
+    const nameDiv = document.createElement('div');
+    nameDiv.textContent=nombre;
+    placeholder.appendChild(nameDiv);
+    container.appendChild(placeholder);
+  }
+
+  const usernameDiv = document.createElement('div');
+  usernameDiv.classList.add('username');
+  usernameDiv.textContent=nombre;
+  container.appendChild(usernameDiv);
+
+  const overlay = document.createElement('div');
+  overlay.classList.add('overlay');
+  container.appendChild(overlay);
+
+  videoElements[nombre]=container;
+  return container;
+}
+
+// Actualizar UI con máximo 4 personas visibles
+function updateUsersUI(usuarios){
+  videosDiv.innerHTML=''; extraDiv.innerHTML='';
+  const keys = Object.keys(usuarios);
+  keys.forEach((uid,i)=>{
+    if(uid===user.uid) videosDiv.appendChild(videoElements[usuarios[uid]] || addVideo(usuarios[uid], localStream,true));
+    else{
+      const vidElem = videoElements[usuarios[uid]] || addVideo(usuarios[uid], null,false);
+      if(i<4) videosDiv.appendChild(vidElem);
+      else extraDiv.appendChild(vidElem);
+    }
+  });
+  showMoreBtn.classList.toggle('hidden', keys.length<=4);
+}
+
+// Escuchar cambios en sala
+const salaUsuariosRef = ref(db,'salas/'+codigoSala+'/usuarios');
+onValue(salaUsuariosRef, snapshot=>{
+  const usuarios = snapshot.val();
+  if(!usuarios) return;
+  updateUsersUI(usuarios);
+});
+
+// WebRTC – señalización via Firebase
+const signalsRef = ref(db,'salas/'+codigoSala+'/signals/'+user.uid);
+const peerConfig = {iceServers:[{urls:"stun:stun.l.google.com:19302"}]};
+
+// Escuchar ofertas de otros usuarios
+const allSignalsRef = ref(db,'salas/'+codigoSala+'/signals');
+onChildAdded(allSignalsRef, snapshot=>{
+  const peerId = snapshot.key;
+  if(peerId===user.uid) return;
+  const data = snapshot.val();
+  if(data.type==='offer') handleOffer(peerId, data);
+  else if(data.type==='answer') handleAnswer(peerId, data);
+  else if(data.type==='ice') handleICE(peerId, data.candidate);
+});
+
+async function createConnection(peerId){
+  if(localConnections[peerId]) return localConnections[peerId];
+  const pc = new RTCPeerConnection(peerConfig);
+  localStream.getTracks().forEach(track=>pc.addTrack(track,localStream));
+
+  pc.ontrack = e=>{
+    const stream = e.streams[0];
+    remoteStreams[peerId]=stream;
+    if(!videoElements[peerId]) videosDiv.appendChild(addVideo(peerId,stream,false));
+    else videoElements[peerId].querySelector('video').srcObject=stream;
+  };
+
+  pc.onicecandidate = e=>{
+    if(e.candidate){
+      set(ref(db,'salas/'+codigoSala+'/signals/'+peerId+'/ice_'+user.uid),{type:'ice',candidate:e.candidate});
+    }
+  };
+
+  localConnections[peerId]=pc;
+  return pc;
+}
+
+async function handleOffer(peerId,data){
+  const pc = await createConnection(peerId);
+  await pc.setRemoteDescription(data.offer);
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  set(ref(db,'salas/'+codigoSala+'/signals/'+peerId+'/answer_'+user.uid),{type:'answer',answer:answer});
+}
+
+async function handleAnswer(peerId,data){
+  const pc = localConnections[peerId];
+  if(!pc) return;
+  await pc.setRemoteDescription(data.answer);
+}
+
+async function handleICE(peerId,candidate){
+  const pc = localConnections[peerId];
+  if(pc) pc.addIceCandidate(candidate);
+}
+
+// Crear oferta para nuevos usuarios
+onChildAdded(salaUsuariosRef,snapshot=>{
+  const uid = snapshot.key;
+  if(uid===user.uid) return;
+  createConnection(uid).then(async pc=>{
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    set(ref(db,'salas/'+codigoSala+'/signals/'+uid+'/offer_'+user.uid),{type:'offer',offer:offer});
+  });
+});
 </script>
+
 <style>
-body { margin:0; font-family:Arial; background:#0f0f1a; color:#fff; display:flex; flex-direction:column; height:100vh; }
-header { display:flex; align-items:center; padding:10px 20px; background:#1c1c2e; font-size:22px; font-weight:bold; }
-header img { height:35px; margin-right:12px; }
-#videos { flex:1; display:grid; grid-template-columns:repeat(2,1fr); grid-auto-rows:200px; gap:10px; padding:10px; box-sizing:border-box; }
 .video-container { position:relative; background:#222; border-radius:12px; overflow:hidden; display:flex; justify-content:center; align-items:center; transition: all 0.3s; }
-.video-container.speaking { box-shadow: 0 0 15px 3px #4caf50; }
 .video-container video { width:100%; height:100%; object-fit:cover; }
 .username { position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,0.6); padding:2px 6px; border-radius:6px; font-size:12px; }
 .name-placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:16px; font-weight:bold; color:#bbb; height:100%; width:100%; }
 .avatar { width:50px; height:50px; border-radius:50%; margin-bottom:5px; background:#555; display:flex; align-items:center; justify-content:center; font-size:24px; }
-.overlay { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) scale(0.5); background:rgba(0,0,0,0.7); padding:8px 12px; border-radius:12px; font-size:14px; opacity:0; transition:all 0.3s ease; }
-.overlay.active { opacity:1; transform:translate(-50%,-50%) scale(1);}
 .controls { display:flex; justify-content:center; gap:10px; padding:10px; background:#1c1c2e; }
 button.video-btn { background:#3a3a50; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:14px; transition:background 0.3s; }
 button.video-btn:hover { background:#56567a; }
-button#showMore { background:#777; }
-.hidden { display:none; }
-body.muted { background:#2a0f0f; }
+#videos { display:grid; grid-template-columns:repeat(2,1fr); grid-auto-rows:200px; gap:10px; padding:10px; }
 #extraUsers { display:none; flex-wrap:wrap; gap:10px; padding:10px; background:#111; max-height:200px; overflow-y:auto; }
+body.muted { background:#2a0f0f; }
 </style>
 </head>
 <body>
-
 <header>
-<img src="Naio.png" alt="Logo Naio">
+<img src="Naio.png" alt="Logo Naio" style="height:35px; margin-right:12px;">
 Naio - Sala <span id="salaCodigo"></span>
 </header>
 
@@ -74,115 +235,5 @@ Naio - Sala <span id="salaCodigo"></span>
 <button id="toggleMic" class="video-btn">🎤 Micrófono</button>
 <button id="showMore" class="video-btn hidden">Más</button>
 </div>
-
-<script type="module">
-import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
-
-const videosDiv = document.getElementById('videos');
-const extraDiv = document.getElementById('extraUsers');
-const showMoreBtn = document.getElementById('showMore');
-document.getElementById('salaCodigo').textContent = codigoSala;
-
-let cameraOn = true, micOn = true;
-let localStream;
-
-// Obtener cámara y micrófono
-navigator.mediaDevices.getUserMedia({ video:true, audio:true })
-.then(stream => {
-  localStream = stream;
-  addVideo(user.displayName, stream, true);
-  joinSala();
-})
-.catch(err => console.error(err));
-
-function addVideo(nombre, stream=null, isLocal=false) {
-  const container = document.createElement('div');
-  container.classList.add('video-container');
-
-  let vid, placeholder;
-  if(stream){
-    vid = document.createElement('video');
-    vid.autoplay = true;
-    vid.muted = isLocal;
-    vid.srcObject = stream;
-    container.appendChild(vid);
-  } else {
-    placeholder = document.createElement('div');
-    placeholder.classList.add('name-placeholder');
-    const avatar = document.createElement('div');
-    avatar.classList.add('avatar');
-    avatar.textContent = nombre[0].toUpperCase();
-    placeholder.appendChild(avatar);
-    const nameDiv = document.createElement('div');
-    nameDiv.textContent = nombre;
-    placeholder.appendChild(nameDiv);
-    container.appendChild(placeholder);
-  }
-
-  const usernameDiv = document.createElement('div');
-  usernameDiv.classList.add('username');
-  usernameDiv.textContent = nombre;
-  container.appendChild(usernameDiv);
-
-  const overlay = document.createElement('div');
-  overlay.classList.add('overlay');
-  container.appendChild(overlay);
-
-  return {container, vid, overlay, placeholder};
-}
-
-// Overlay animaciones
-function showOverlay(overlay, msg) {
-  overlay.textContent = msg;
-  overlay.classList.add('active');
-  setTimeout(()=>overlay.classList.remove('active'),1500);
-}
-
-// Controles
-document.getElementById('toggleCamera').addEventListener('click',()=>{
-  cameraOn = !cameraOn;
-  localStream.getVideoTracks().forEach(t=>t.enabled=cameraOn);
-  const localVid = videosDiv.querySelector('video');
-  if(localVid) localVid.style.display = cameraOn?'block':'none';
-});
-document.getElementById('toggleMic').addEventListener('click',()=>{
-  micOn = !micOn;
-  localStream.getAudioTracks().forEach(t=>t.enabled=micOn);
-  document.body.classList.toggle('muted',!micOn);
-});
-
-// Manejo sala en Firebase
-function joinSala(){
-  const salaUsuariosRef = ref(db,'salas/'+codigoSala+'/usuarios/'+user.uid);
-  set(salaUsuariosRef,user.displayName);
-
-  const allUsersRef = ref(db,'salas/'+codigoSala+'/usuarios');
-  onValue(allUsersRef, snapshot => {
-    const usuarios = snapshot.val();
-    updateUsersUI(usuarios);
-  });
-}
-
-function updateUsersUI(usuarios){
-  videosDiv.innerHTML=''; extraDiv.innerHTML='';
-  const keys = Object.keys(usuarios);
-  keys.forEach((uid,i)=>{
-    const nombre = usuarios[uid];
-    let obj;
-    if(uid === user.uid) obj = addVideo(nombre, localStream, true);
-    else obj = addVideo(nombre, null, false);
-
-    if(i<4) videosDiv.appendChild(obj.container);
-    else extraDiv.appendChild(obj.container);
-  });
-
-  showMoreBtn.classList.toggle('hidden', keys.length<=4);
-}
-
-showMoreBtn.addEventListener('click',()=>{
-  extraDiv.style.display = extraDiv.style.display==='flex'?'none':'flex';
-  showMoreBtn.textContent = extraDiv.style.display==='flex'?'Cerrar':'Más';
-});
-</script>
 </body>
 </html>
