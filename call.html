@@ -10,7 +10,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebas
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
 import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
 
-// Firebase config
+// Firebase
 const firebaseConfig = {
   apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
   authDomain: "naio1092ngs.firebaseapp.com",
@@ -24,20 +24,16 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
-// Obtener usuario logueado
 let user;
 auth.onAuthStateChanged(u => {
-  if (!u) {
-    alert("Debes iniciar sesión primero");
-    window.location.href = "index.html";
-  } else user = u;
+  if(!u) window.location.href="index.html";
+  else user = u;
 });
 
-// Obtener código de sala desde query string
+// Código de sala
 const urlParams = new URLSearchParams(window.location.search);
 const codigoSala = urlParams.get('codigo');
 if(!codigoSala) alert("Código de sala no especificado");
-
 window.codigoSala = codigoSala;
 
 </script>
@@ -45,18 +41,22 @@ window.codigoSala = codigoSala;
 body { margin:0; font-family:Arial; background:#0f0f1a; color:#fff; display:flex; flex-direction:column; height:100vh; }
 header { display:flex; align-items:center; padding:10px 20px; background:#1c1c2e; font-size:22px; font-weight:bold; }
 header img { height:35px; margin-right:12px; }
-#videos { flex:1; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); grid-auto-rows:180px; gap:10px; padding:10px; box-sizing:border-box; }
-.video-container { position:relative; background:#222; border-radius:12px; overflow:hidden; display:flex; justify-content:center; align-items:center; }
+#videos { flex:1; display:grid; grid-template-columns:repeat(2,1fr); grid-auto-rows:200px; gap:10px; padding:10px; box-sizing:border-box; }
+.video-container { position:relative; background:#222; border-radius:12px; overflow:hidden; display:flex; justify-content:center; align-items:center; transition: all 0.3s; }
+.video-container.speaking { box-shadow: 0 0 15px 3px #4caf50; }
 .video-container video { width:100%; height:100%; object-fit:cover; }
 .username { position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,0.6); padding:2px 6px; border-radius:6px; font-size:12px; }
+.name-placeholder { display:flex; flex-direction:column; align-items:center; justify-content:center; font-size:16px; font-weight:bold; color:#bbb; height:100%; width:100%; }
+.avatar { width:50px; height:50px; border-radius:50%; margin-bottom:5px; background:#555; display:flex; align-items:center; justify-content:center; font-size:24px; }
 .overlay { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) scale(0.5); background:rgba(0,0,0,0.7); padding:8px 12px; border-radius:12px; font-size:14px; opacity:0; transition:all 0.3s ease; }
 .overlay.active { opacity:1; transform:translate(-50%,-50%) scale(1);}
 .controls { display:flex; justify-content:center; gap:10px; padding:10px; background:#1c1c2e; }
 button.video-btn { background:#3a3a50; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:14px; transition:background 0.3s; }
 button.video-btn:hover { background:#56567a; }
+button#showMore { background:#777; }
 .hidden { display:none; }
-.name-placeholder { font-size:16px; font-weight:bold; color:#bbb; }
 body.muted { background:#2a0f0f; }
+#extraUsers { display:none; flex-wrap:wrap; gap:10px; padding:10px; background:#111; max-height:200px; overflow-y:auto; }
 </style>
 </head>
 <body>
@@ -67,18 +67,23 @@ Naio - Sala <span id="salaCodigo"></span>
 </header>
 
 <div id="videos"></div>
+<div id="extraUsers"></div>
 
 <div class="controls">
 <button id="toggleCamera" class="video-btn">📷 Cámara</button>
 <button id="toggleMic" class="video-btn">🎤 Micrófono</button>
+<button id="showMore" class="video-btn hidden">Más</button>
 </div>
 
 <script type="module">
+import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
+
 const videosDiv = document.getElementById('videos');
+const extraDiv = document.getElementById('extraUsers');
+const showMoreBtn = document.getElementById('showMore');
 document.getElementById('salaCodigo').textContent = codigoSala;
 
-let cameraOn = true;
-let micOn = true;
+let cameraOn = true, micOn = true;
 let localStream;
 
 // Obtener cámara y micrófono
@@ -90,34 +95,43 @@ navigator.mediaDevices.getUserMedia({ video:true, audio:true })
 })
 .catch(err => console.error(err));
 
-function addVideo(nombre, stream, isLocal=false) {
+function addVideo(nombre, stream=null, isLocal=false) {
   const container = document.createElement('div');
   container.classList.add('video-container');
-  
-  const vid = document.createElement('video');
-  vid.autoplay = true;
-  vid.muted = isLocal;
-  vid.srcObject = stream;
-  container.appendChild(vid);
+
+  let vid, placeholder;
+  if(stream){
+    vid = document.createElement('video');
+    vid.autoplay = true;
+    vid.muted = isLocal;
+    vid.srcObject = stream;
+    container.appendChild(vid);
+  } else {
+    placeholder = document.createElement('div');
+    placeholder.classList.add('name-placeholder');
+    const avatar = document.createElement('div');
+    avatar.classList.add('avatar');
+    avatar.textContent = nombre[0].toUpperCase();
+    placeholder.appendChild(avatar);
+    const nameDiv = document.createElement('div');
+    nameDiv.textContent = nombre;
+    placeholder.appendChild(nameDiv);
+    container.appendChild(placeholder);
+  }
 
   const usernameDiv = document.createElement('div');
   usernameDiv.classList.add('username');
   usernameDiv.textContent = nombre;
   container.appendChild(usernameDiv);
 
-  const namePlaceholder = document.createElement('div');
-  namePlaceholder.classList.add('name-placeholder','hidden');
-  namePlaceholder.textContent = nombre;
-  container.appendChild(namePlaceholder);
-
   const overlay = document.createElement('div');
   overlay.classList.add('overlay');
   container.appendChild(overlay);
 
-  videosDiv.appendChild(container);
-  return { container, vid, overlay, namePlaceholder };
+  return {container, vid, overlay, placeholder};
 }
 
+// Overlay animaciones
 function showOverlay(overlay, msg) {
   overlay.textContent = msg;
   overlay.classList.add('active');
@@ -126,32 +140,49 @@ function showOverlay(overlay, msg) {
 
 // Controles
 document.getElementById('toggleCamera').addEventListener('click',()=>{
-  cameraOn=!cameraOn;
+  cameraOn = !cameraOn;
   localStream.getVideoTracks().forEach(t=>t.enabled=cameraOn);
-  document.querySelector('.video-container video').style.display=cameraOn?'block':'none';
-  document.querySelector('.name-placeholder').classList.toggle('hidden',cameraOn);
+  const localVid = videosDiv.querySelector('video');
+  if(localVid) localVid.style.display = cameraOn?'block':'none';
 });
 document.getElementById('toggleMic').addEventListener('click',()=>{
-  micOn=!micOn;
+  micOn = !micOn;
   localStream.getAudioTracks().forEach(t=>t.enabled=micOn);
   document.body.classList.toggle('muted',!micOn);
 });
 
-// Función para unirse a la sala en Firebase
-function joinSala() {
-  const salaRef = ref(db,'salas/'+codigoSala+'/usuarios/'+user.uid);
-  set(salaRef, user.displayName);
+// Manejo sala en Firebase
+function joinSala(){
+  const salaUsuariosRef = ref(db,'salas/'+codigoSala+'/usuarios/'+user.uid);
+  set(salaUsuariosRef,user.displayName);
 
-  // Escuchar cambios en la sala
-  const salaUsuariosRef = ref(db,'salas/'+codigoSala+'/usuarios');
-  onValue(salaUsuariosRef, snapshot => {
+  const allUsersRef = ref(db,'salas/'+codigoSala+'/usuarios');
+  onValue(allUsersRef, snapshot => {
     const usuarios = snapshot.val();
-    // TODO: Aquí irían las conexiones WebRTC reales para cada usuario
-    console.log('Usuarios en sala:',usuarios);
+    updateUsersUI(usuarios);
   });
 }
 
-</script>
+function updateUsersUI(usuarios){
+  videosDiv.innerHTML=''; extraDiv.innerHTML='';
+  const keys = Object.keys(usuarios);
+  keys.forEach((uid,i)=>{
+    const nombre = usuarios[uid];
+    let obj;
+    if(uid === user.uid) obj = addVideo(nombre, localStream, true);
+    else obj = addVideo(nombre, null, false);
 
+    if(i<4) videosDiv.appendChild(obj.container);
+    else extraDiv.appendChild(obj.container);
+  });
+
+  showMoreBtn.classList.toggle('hidden', keys.length<=4);
+}
+
+showMoreBtn.addEventListener('click',()=>{
+  extraDiv.style.display = extraDiv.style.display==='flex'?'none':'flex';
+  showMoreBtn.textContent = extraDiv.style.display==='flex'?'Cerrar':'Más';
+});
+</script>
 </body>
 </html>
