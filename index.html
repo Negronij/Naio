@@ -3,13 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Naio - Inicio</title>
+<title>Naio - Conecta y Comunícate</title>
 <link rel="icon" href="Naio.png">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;700&display=swap" rel="stylesheet">
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
-import { getAuth, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
-import { getDatabase, ref, set, get } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
+import { getDatabase, ref, set, get, onValue, push, remove } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
@@ -24,161 +25,490 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
-let currentUser;
+let currentUser = null;
+
+// --- Autenticación y Manejo de Usuario ---
+
+// Escuchar cambios en el estado de autenticación
+onAuthStateChanged(auth, (user) => {
+  if (user) {
+    currentUser = user;
+    showLobby();
+  } else {
+    currentUser = null;
+    showLoginScreen();
+  }
+});
 
 // Login con Google
 window.loginWithGoogle = async () => {
   const provider = new GoogleAuthProvider();
   try {
-    const result = await signInWithPopup(auth, provider);
-    currentUser = result.user;
-    showLobby();
+    await signInWithPopup(auth, provider);
+    // onAuthStateChanged se encargará de actualizar currentUser y mostrar el lobby
   } catch(err) {
-    console.error(err);
-    alert("Error al iniciar sesión");
+    console.error("Error al iniciar sesión con Google:", err);
+    alert("Ocurrió un error al intentar iniciar sesión con Google. Por favor, inténtalo de nuevo.");
   }
 }
 
-// Mostrar Lobby
-function showLobby(){
-  document.getElementById('welcomeScreen').style.display='none';
-  document.getElementById('loginScreen').style.display='flex';
-  document.getElementById('usuarioNombre').textContent = currentUser.displayName;
+// --- Navegación y Vistas ---
+
+function showLoginScreen() {
+  document.getElementById('welcomeScreen').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('lobby').style.display = 'none'; // Ocultar lobby si estaba visible
+  document.getElementById('userInfo').style.display = 'none'; // Ocultar información de usuario si estaba visible
 }
+
+function showLobby() {
+  document.getElementById('welcomeScreen').style.display = 'none';
+  document.getElementById('loginScreen').style.display = 'flex';
+  document.getElementById('lobby').style.display = 'flex'; // Mostrar lobby
+  document.getElementById('login').style.display = 'none'; // Ocultar botón de login
+  document.getElementById('welcomeMessage').textContent = `¡Hola, ${currentUser.displayName}!`;
+  document.getElementById('welcomeMessage').style.display = 'block';
+}
+
+// --- Gestión de Salas ---
 
 // Crear sala
 window.crearSala = async () => {
-  if(!currentUser) return alert("Debes iniciar sesión primero");
-  const codigo = Math.random().toString(36).substring(2,8).toUpperCase();
-  const salaRef = ref(db,'salas/'+codigo);
-  await set(salaRef, {
-    codigo: codigo,
-    usuarios: {
-      [currentUser.uid]: currentUser.displayName
-    }
-  });
-  window.location.href = `call.html?codigo=${codigo}`;
+  if (!currentUser) {
+    alert("Debes iniciar sesión para crear una sala.");
+    return;
+  }
+  const codigo = Math.random().toString(36).substring(2, 8).toUpperCase();
+  const salaRef = ref(db, 'salas/' + codigo);
+
+  try {
+    await set(salaRef, {
+      codigo: codigo,
+      creador: currentUser.uid,
+      usuarios: {
+        [currentUser.uid]: currentUser.displayName
+      },
+      activo: true // Marcamos la sala como activa
+    });
+    // Redirigir a la página de llamada con el código de la sala
+    window.location.href = `call.html?codigo=${codigo}`;
+  } catch (error) {
+    console.error("Error al crear la sala:", error);
+    alert("No se pudo crear la sala. Inténtalo de nuevo.");
+  }
 }
 
 // Unirse a sala
 window.unirseSala = async () => {
-  const codigo = document.getElementById('codigoSala').value.toUpperCase();
-  if(!currentUser) return alert("Debes iniciar sesión primero");
-  if(!codigo) return alert("Ingresa un código de sala");
+  const codigoInput = document.getElementById('codigoSala');
+  const codigo = codigoInput.value.trim().toUpperCase();
 
-  const salaRef = ref(db,'salas/' + codigo);
-  const snapshot = await get(salaRef);
-  if(!snapshot.exists()) return alert("Sala no encontrada");
-  
-  await set(ref(db,'salas/'+codigo+'/usuarios/'+currentUser.uid), currentUser.displayName);
-  window.location.href = `call.html?codigo=${codigo}`;
-}
-
-// Ver participantes
-window.verParticipantes = async () => {
-  const codigo = document.getElementById('codigoSala').value.toUpperCase();
-  if(!currentUser) return alert("Debes iniciar sesión primero");
-  if(!codigo) return alert("Ingresa un código de sala");
-
-  const salaRef = ref(db,'salas/' + codigo + '/usuarios');
-  const snapshot = await get(salaRef);
-  if(!snapshot.exists()) return alert("Sala no encontrada");
-
-  const usuarios = snapshot.val();
-  const listDiv = document.getElementById('participantesList');
-  listDiv.innerHTML = '';
-  for(let uid in usuarios){
-    const div = document.createElement('div');
-    div.textContent = usuarios[uid];
-    div.className = 'participant';
-    listDiv.appendChild(div);
+  if (!currentUser) {
+    alert("Debes iniciar sesión para unirte a una sala.");
+    return;
   }
-  document.getElementById('participantesModal').style.display='flex';
+  if (!codigo) {
+    alert("Por favor, ingresa el código de la sala.");
+    codigoInput.focus();
+    return;
+  }
+
+  const salaRef = ref(db, 'salas/' + codigo);
+  try {
+    const snapshot = await get(salaRef);
+    if (!snapshot.exists() || !snapshot.val().activo) {
+      alert("La sala no existe o ya no está activa. Verifica el código.");
+      return;
+    }
+
+    // Añadir usuario a la sala
+    await set(ref(db, 'salas/' + codigo + '/usuarios/' + currentUser.uid), currentUser.displayName);
+    window.location.href = `call.html?codigo=${codigo}`;
+  } catch (error) {
+    console.error("Error al unirse a la sala:", error);
+    alert("Ocurrió un error al intentar unirte a la sala.");
+  }
 }
 
-// Cerrar modal participantes
-window.cerrarParticipantes = () => {
-  document.getElementById('participantesModal').style.display='none';
+// Ver participantes de una sala
+window.verParticipantes = async () => {
+  const codigoInput = document.getElementById('codigoSala');
+  const codigo = codigoInput.value.trim().toUpperCase();
+
+  if (!currentUser) {
+    alert("Debes iniciar sesión para ver los participantes.");
+    return;
+  }
+  if (!codigo) {
+    alert("Por favor, ingresa el código de la sala.");
+    codigoInput.focus();
+    return;
+  }
+
+  const salaRef = ref(db, 'salas/' + codigo + '/usuarios');
+  try {
+    const snapshot = await get(salaRef);
+    const modal = document.getElementById('participantesModal');
+    const participantesList = document.getElementById('participantesList');
+    participantesList.innerHTML = ''; // Limpiar lista anterior
+
+    if (snapshot.exists()) {
+      const usuarios = snapshot.val();
+      for (const uid in usuarios) {
+        const div = document.createElement('div');
+        div.textContent = usuarios[uid];
+        div.className = 'participant-item';
+        participantesList.appendChild(div);
+      }
+      modal.style.display = 'flex';
+    } else {
+      alert("No se encontraron participantes para esta sala. Asegúrate de que el código sea correcto.");
+    }
+  } catch (error) {
+    console.error("Error al obtener participantes:", error);
+    alert("No se pudieron cargar los participantes. Inténtalo de nuevo.");
+  }
 }
+
+// Cerrar modal de participantes
+window.cerrarParticipantes = () => {
+  document.getElementById('participantesModal').style.display = 'none';
+}
+
+// --- Manejo de Animaciones Iniciales ---
+window.onload = () => {
+  // Mostrar la pantalla de bienvenida con animación
+  document.getElementById('welcomeScreen').style.display = 'flex';
+  document.getElementById('loginScreen').style.display = 'none';
+
+  // Después de que la animación del logo termine, mostrar la pantalla de login
+  setTimeout(() => {
+    // Solo mostramos el login si el usuario no está autenticado
+    if (!currentUser) {
+      document.getElementById('welcomeScreen').style.display = 'none';
+      document.getElementById('loginScreen').style.display = 'flex';
+      document.getElementById('lobby').style.display = 'none';
+      document.getElementById('login').style.display = 'flex'; // Mostrar botón de login
+      document.getElementById('welcomeMessage').style.display = 'none';
+    }
+  }, 2000); // Duración de la animación
+};
 
 </script>
 
 <style>
-body { margin:0; font-family:Arial; background:#0f0f1a; color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; overflow:hidden; }
+:root {
+  --primary-color: #FF6F00; /* Naranja vibrante */
+  --background-dark: #0f0f1a; /* Azul oscuro profundo */
+  --text-light: #e0e0e0; /* Gris claro para texto */
+  --card-background: rgba(255, 255, 255, 0.08); /* Fondo semitransparente */
+  --button-hover-shadow: 0 4px 15px rgba(255, 111, 0, 0.4);
+}
 
-#welcomeScreen, #loginScreen { display:none; flex-direction:column; align-items:center; justify-content:center; gap:20px; }
+body {
+  margin: 0;
+  font-family: 'Montserrat', sans-serif;
+  background-color: var(--background-dark);
+  color: var(--text-light);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh; /* Usar min-height para asegurar que ocupe toda la pantalla */
+  overflow: hidden; /* Evitar barras de scroll innecesarias */
+  padding: 20px; /* Añadir padding para que el contenido no toque los bordes */
+  box-sizing: border-box;
+}
 
-#welcomeLogo { height:150px; animation:logoIntro 1.8s ease forwards; }
+#welcomeScreen, #loginScreen {
+  display: none; /* Oculto por defecto, controlado por JS */
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 25px; /* Espacio entre elementos */
+  width: 100%; /* Asegurar que ocupe todo el ancho */
+  max-width: 500px; /* Limitar el ancho máximo para mejor lectura */
+}
 
-#loginScreen h2 { font-size:28px; text-align:center; margin-bottom:20px; animation:welcomeFade 1.2s ease forwards; opacity:0; }
-button { cursor:pointer; font-size:16px; border:none; border-radius:8px; padding:10px 20px; display:flex; align-items:center; gap:8px; transition:transform 0.2s; }
-button:hover { transform:scale(1.05); }
-#loginScreen button { background:#FF6F00; color:#fff; }
+#welcomeLogo {
+  height: 180px;
+  animation: logoIntro 2s ease-out forwards; /* Duración y estilo de animación */
+  filter: drop-shadow(0 0 15px rgba(255, 111, 0, 0.7)); /* Sombra para el logo */
+}
 
-input { padding:8px; border-radius:6px; border:none; font-size:16px; text-align:center; }
+#loginScreen h2 {
+  font-size: 32px;
+  text-align: center;
+  margin-bottom: 10px;
+  animation: welcomeFadeIn 1.5s ease-out forwards;
+  opacity: 0;
+  font-weight: 700; /* Texto en negrita */
+}
 
-.participant { background:rgba(255,255,255,0.1); padding:6px 12px; border-radius:6px; margin:4px 0; }
+#welcomeMessage {
+  font-size: 24px;
+  font-weight: 700;
+  margin-bottom: 20px;
+  display: none; /* Oculto por defecto */
+  animation: welcomeFadeIn 1.5s ease-out forwards;
+}
 
+/* Estilos generales de botones */
+button {
+  cursor: pointer;
+  font-size: 17px;
+  font-weight: 700;
+  border: none;
+  border-radius: 10px; /* Bordes más redondeados */
+  padding: 12px 25px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  transition: transform 0.3s ease, box-shadow 0.3s ease;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2); /* Sombra sutil */
+}
+
+button:hover {
+  transform: translateY(-3px) scale(1.03); /* Efecto de elevación y escala */
+  box-shadow: var(--button-hover-shadow), 0 6px 20px rgba(0, 0, 0, 0.3); /* Sombra más pronunciada al pasar el ratón */
+}
+
+/* Botón de inicio de sesión con Google */
+#loginScreen #login button {
+  background: linear-gradient(90deg, #4285F4 0%, #DB4437 40%, #F4B400 80%, #0F9D58 100%); /* Gradiente Google */
+  color: white;
+  padding: 14px 30px; /* Más grande */
+  font-size: 18px;
+  box-shadow: 0 4px 10px rgba(66, 133, 244, 0.4); /* Sombra asociada al color */
+}
+#loginScreen #login button:hover {
+  box-shadow: 0 6px 20px rgba(66, 133, 244, 0.6);
+}
+#loginScreen #login button img {
+  height: 28px; /* Logo de Google más grande */
+}
+
+/* Contenedor del Lobby */
+#lobby {
+  display: none; /* Oculto por defecto, se muestra al iniciar sesión */
+  flex-direction: column;
+  align-items: center;
+  gap: 15px;
+  width: 100%;
+  max-width: 400px;
+}
+
+#lobby h3 {
+  font-size: 24px;
+  color: var(--primary-color);
+  margin-bottom: 10px;
+}
+
+/* Botones de Crear y Unirse */
+#lobby button:first-of-type { /* Botón de Crear Sala */
+  background-color: var(--primary-color);
+  color: white;
+  width: 100%; /* Ocupa todo el ancho del contenedor */
+}
+
+/* Contenedor de input y botones de unirse/ver */
+.join-section {
+  display: flex;
+  flex-direction: column; /* Columnas en pantallas pequeñas */
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+@media (min-width: 600px) { /* Estilos para pantallas más grandes */
+  .join-section {
+    flex-direction: row; /* Filas en pantallas más grandes */
+    justify-content: center;
+  }
+}
+
+.join-section input[type="text"] {
+  padding: 10px 15px;
+  border-radius: 8px;
+  border: 2px solid var(--primary-color); /* Borde destacado */
+  font-size: 16px;
+  text-align: center;
+  background-color: rgba(255, 255, 255, 0.1); /* Fondo semitransparente */
+  color: var(--text-light);
+  flex-grow: 1; /* Que ocupe el espacio disponible */
+  outline: none; /* Quitar outline por defecto */
+  transition: border-color 0.3s ease;
+}
+
+.join-section input[type="text"]:focus {
+  border-color: #FF8F33; /* Color más claro al enfocar */
+}
+
+.join-section button {
+  background-color: var(--card-background);
+  color: var(--text-light);
+  border: 1px solid rgba(255, 255, 255, 0.3); /* Borde sutil */
+}
+
+.join-section button:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+/* Estilos del modal de participantes */
 #participantesModal {
-  position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); display:none; flex-direction:column; align-items:center; justify-content:center;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: rgba(15, 15, 26, 0.95); /* Fondo oscuro y ligeramente transparente */
+  display: none; /* Oculto por defecto */
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000; /* Asegura que esté sobre otros elementos */
+  backdrop-filter: blur(5px); /* Efecto de desenfoque */
 }
-#participantesList { display:flex; flex-direction:column; gap:8px; max-height:50%; overflow-y:auto; margin-bottom:20px; }
-#participantesModal button { background:#FF6F00; color:#fff; border-radius:6px; padding:10px 20px; border:none; cursor:pointer; }
 
-@keyframes logoIntro{
-  0% { transform: scale(0) rotate(0deg); opacity:0; }
-  50% { transform: scale(1.3) rotate(360deg); opacity:1; }
-  100% { transform: scale(1) rotate(0deg); opacity:1; }
+#participantesModal .modal-content {
+  background: rgba(30, 30, 50, 0.8); /* Fondo del contenedor modal */
+  padding: 30px;
+  border-radius: 15px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 90%;
+  max-width: 450px;
+  text-align: center;
 }
-@keyframes welcomeFade{
-  from { opacity:0; transform:translateY(20px); }
-  to { opacity:1; transform:translateY(0); }
+
+#participantesModal h3 {
+  font-size: 26px;
+  margin-bottom: 20px;
+  color: var(--primary-color);
+  font-weight: 700;
+}
+
+#participantesList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 40vh; /* Altura máxima para la lista */
+  overflow-y: auto; /* Scroll si la lista es muy larga */
+  margin-bottom: 25px;
+  width: 100%;
+  padding-right: 10px; /* Espacio para el scrollbar */
+}
+
+.participant-item {
+  background: var(--card-background);
+  padding: 10px 18px;
+  border-radius: 8px;
+  margin: 4px 0;
+  font-size: 17px;
+  color: var(--text-light);
+  text-align: left;
+  transition: background-color 0.2s ease;
+}
+
+.participant-item:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+#participantesModal .modal-content button {
+  background: var(--primary-color);
+  color: white;
+  width: auto; /* Ancho automático */
+  padding: 12px 30px;
+}
+
+#participantesModal .modal-content button:hover {
+  background: #FF8F33; /* Color más claro al pasar el ratón */
+}
+
+
+/* --- Keyframes de Animación --- */
+@keyframes logoIntro {
+  0% {
+    transform: scale(0) rotate(0deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.3) rotate(360deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
+@keyframes welcomeFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Ajustes para pantallas pequeñas */
+@media (max-width: 768px) {
+  #welcomeLogo {
+    height: 120px;
+  }
+  #loginScreen h2 {
+    font-size: 28px;
+  }
+  button {
+    font-size: 16px;
+    padding: 10px 20px;
+  }
+  #loginScreen #login button {
+    padding: 12px 25px;
+    font-size: 17px;
+  }
+  .join-section input[type="text"] {
+    width: calc(100% - 30px); /* Ajustar ancho de input */
+  }
 }
 
 </style>
 </head>
 <body>
 
-<!-- Animación inicial del logo -->
 <div id="welcomeScreen">
   <img id="welcomeLogo" src="Naio.png" alt="Logo Naio">
 </div>
 
-<!-- Pantalla de bienvenida con login -->
 <div id="loginScreen">
-  <h2>Bienvenido a Naio</h2>
-  <img src="Naio.png" alt="Logo" style="height:100px; margin-bottom:20px;">
-  <div id="login">
+  <h2 id="welcomeMessage"></h2> <img src="Naio.png" alt="Logo" style="height:100px; margin-bottom:20px; display:none;"> <div id="login">
     <button onclick="loginWithGoogle()">
       <img src="google.png" alt="Google" style="height:24px;"> Iniciar sesión con Google
     </button>
   </div>
 
-  <!-- Lobby: crear o unirse a sala -->
-  <div id="lobby" style="display:flex; flex-direction:column; align-items:center; gap:12px;">
-    <button onclick="crearSala()">Crear Sala</button>
-    <div style="display:flex; gap:8px;">
+  <div id="lobby">
+    <h3>Menú Principal</h3>
+    <button onclick="crearSala()" style="background-color: #FF6F00; color: white;">Crear Sala</button>
+    <div class="join-section">
       <input type="text" id="codigoSala" placeholder="Código de sala">
-      <button onclick="unirseSala()">Unirse</button>
-      <button onclick="verParticipantes()">Ver participantes</button>
+      <button onclick="unirseSala()">Unirse a Sala</button>
+      <button onclick="verParticipantes()">Ver Participantes</button>
     </div>
-    <span id="usuarioNombre" style="margin-top:12px;"></span>
   </div>
 </div>
 
-<!-- Modal participantes -->
 <div id="participantesModal">
-  <div id="participantesList"></div>
-  <button onclick="cerrarParticipantes()">Cerrar</button>
+  <div class="modal-content">
+    <h3>Participantes en la Sala</h3>
+    <div id="participantesList"></div>
+    <button onclick="cerrarParticipantes()">Cerrar</button>
+  </div>
 </div>
-
-<script>
-  // Iniciar animación: después de 2s mostrar loginScreen
-  setTimeout(()=>{
-    document.getElementById('welcomeScreen').style.display='none';
-    document.getElementById('loginScreen').style.display='flex';
-  }, 2000);
-</script>
 
 </body>
 </html>
