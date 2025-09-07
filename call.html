@@ -18,14 +18,10 @@ header img { height:35px; margin-right:12px; }
 .video-container video { width:100%; height:100%; object-fit:cover; border-radius:12px; }
 .name-placeholder { position:absolute; font-size:16px; font-weight:bold; color:#bbb; display:none; }
 .username { position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,0.6); padding:2px 6px; border-radius:6px; font-size:12px; }
-.overlay { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) scale(0.5); background:rgba(0,0,0,0.7); padding:8px 12px; border-radius:12px; font-size:14px; opacity:0; transition:all 0.3s ease; }
-.overlay.active { opacity:1; transform:translate(-50%,-50%) scale(1); }
-
 .controls { display:flex; justify-content:center; gap:10px; padding:10px; background:#1c1c2e; }
 button.video-btn { background:#3a3a50; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:14px; display:flex; align-items:center; gap:6px; transition:background 0.3s; }
 button.video-btn:hover { background:#56567a; }
-
-.more-btn { background:#56567a; border:none; color:#fff; border-radius:6px; padding:4px 8px; cursor:pointer; position:absolute; top:4px; right:4px; font-size:12px; }
+#joinBtn { margin:10px auto; padding:10px 20px; font-size:16px; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -41,6 +37,8 @@ Naio - Sala <span id="salaCodigo"></span>
 <button id="toggleCamera" class="video-btn"><img src="cam.png" width="18"> Cámara</button>
 <button id="toggleMic" class="video-btn"><img src="mic.png" width="18"> Micrófono</button>
 </div>
+
+<button id="joinBtn">🔴 Unirse a la llamada</button>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
@@ -61,144 +59,157 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
-// Usuario logueado
-let user;
-auth.onAuthStateChanged(u => {
-  if(!u){ alert("Debes iniciar sesión"); window.location.href="index.html"; }
-  else user=u;
-});
+// Variables globales
+let user, localStream;
+const peers = {};
+const cameras = {};
+let camOn = true, micOn = true;
 
-// Código sala
+const videosDiv = document.getElementById('videos');
+const toggleCameraBtn = document.getElementById('toggleCamera');
+const toggleMicBtn = document.getElementById('toggleMic');
+const joinBtn = document.getElementById('joinBtn');
+
 const urlParams = new URLSearchParams(window.location.search);
 const codigoSala = urlParams.get('codigo');
 if(!codigoSala) alert("Código de sala no especificado");
 document.getElementById('salaCodigo').textContent = codigoSala;
 
-// Variables
-const videosDiv = document.getElementById('videos');
-let localStream;
-let peers = {};
-let cameras = {};
-
-// Obtener cámara y micrófono
-navigator.mediaDevices.getUserMedia({video:true, audio:true})
-.then(stream=>{
-  localStream=stream;
-  addVideo(user.uid, user.displayName, stream, true);
-  joinSala();
-}).catch(err=>console.error(err));
+// Espera a login
+auth.onAuthStateChanged(u=>{
+  if(!u){ alert("Debes iniciar sesión"); window.location.href="index.html"; }
+  else user = u;
+});
 
 // Función para agregar video
 function addVideo(uid, nombre, stream, isLocal=false){
   if(cameras[uid]) return cameras[uid];
-  let container=document.createElement('div');
+  const container = document.createElement('div');
   container.classList.add('video-container');
 
-  let vid=document.createElement('video');
-  vid.autoplay=true; vid.muted=isLocal; vid.srcObject=stream;
+  const vid = document.createElement('video');
+  vid.autoplay = true;
+  vid.playsInline = true;
+  vid.muted = isLocal;
+  vid.srcObject = stream;
   container.appendChild(vid);
 
-  let usernameDiv=document.createElement('div');
+  const usernameDiv = document.createElement('div');
   usernameDiv.classList.add('username');
-  usernameDiv.textContent=nombre;
+  usernameDiv.textContent = nombre;
   container.appendChild(usernameDiv);
 
-  let namePlaceholder=document.createElement('div');
+  const namePlaceholder = document.createElement('div');
   namePlaceholder.classList.add('name-placeholder');
-  namePlaceholder.textContent=nombre;
+  namePlaceholder.textContent = nombre;
   container.appendChild(namePlaceholder);
 
   videosDiv.appendChild(container);
-  cameras[uid]={container, vid, namePlaceholder};
+  cameras[uid] = { container, vid, namePlaceholder };
   return cameras[uid];
 }
 
-// Controles con cambio de íconos
-const toggleCameraBtn = document.getElementById('toggleCamera');
-const toggleMicBtn = document.getElementById('toggleMic');
-let camOn = true, micOn = true;
-
-toggleCameraBtn.addEventListener('click', () => {
-    camOn = !camOn;
-    localStream.getVideoTracks().forEach(t => t.enabled = camOn);
-    cameras[user.uid].vid.style.display = camOn ? 'block' : 'none';
-    cameras[user.uid].namePlaceholder.style.display = camOn ? 'none' : 'block';
-    toggleCameraBtn.querySelector('img').src = camOn ? 'cam.png' : 'cam_off.png';
+// Controles de cámara/micrófono
+toggleCameraBtn.addEventListener('click', ()=>{
+  camOn = !camOn;
+  localStream.getVideoTracks().forEach(t=>t.enabled=camOn);
+  cameras[user.uid].vid.style.display = camOn?'block':'none';
+  cameras[user.uid].namePlaceholder.style.display = camOn?'none':'block';
+  toggleCameraBtn.querySelector('img').src = camOn?'cam.png':'cam_off.png';
 });
 
-toggleMicBtn.addEventListener('click', () => {
-    micOn = !micOn;
-    localStream.getAudioTracks().forEach(t => t.enabled = micOn);
-    document.body.classList.toggle('muted', !micOn);
-    toggleMicBtn.querySelector('img').src = micOn ? 'mic.png' : 'mic_off.png';
+toggleMicBtn.addEventListener('click', ()=>{
+  micOn = !micOn;
+  localStream.getAudioTracks().forEach(t=>t.enabled=micOn);
+  document.body.classList.toggle('muted', !micOn);
+  toggleMicBtn.querySelector('img').src = micOn?'mic.png':'mic_off.png';
 });
 
-// Unirse a la sala
+// Función principal para unirse
+joinBtn.addEventListener('click', async ()=>{
+  joinBtn.disabled = true;
+  joinBtn.style.display = 'none';
+  try {
+    localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
+    addVideo(user.uid, user.displayName, localStream, true);
+    joinSala();
+  } catch(e){
+    alert("No se pudo acceder a cámara/micrófono: "+e.message);
+  }
+});
+
+// Conectar a la sala
 function joinSala(){
-  const salaRef=ref(db,'salas/'+codigoSala+'/usuarios/'+user.uid);
+  const salaRef = ref(db, `salas/${codigoSala}/usuarios/${user.uid}`);
   set(salaRef,{name:user.displayName});
   window.addEventListener('beforeunload',()=>remove(salaRef));
 
-  const usersRef=ref(db,'salas/'+codigoSala+'/usuarios');
+  const usersRef = ref(db, `salas/${codigoSala}/usuarios`);
   onValue(usersRef, snapshot=>{
     const usuarios = snapshot.val() || {};
     for(let uid in usuarios){
-      if(uid!==user.uid && !peers[uid]){
+      if(uid !== user.uid && !peers[uid]){
         createPeer(uid, true);
       }
     }
   });
 }
 
-// Crear PeerConnection
+// Crear peer
 function createPeer(remoteUid, isOffer){
-  const peer=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+  const peer = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
   localStream.getTracks().forEach(t=>peer.addTrack(t, localStream));
 
-  peer.ontrack = (event)=>{ if(!cameras[remoteUid]) addVideo(remoteUid,"Usuario",event.streams[0]); };
-  peer.onicecandidate = (e)=>{ if(e.candidate) push(ref(db,`salas/${codigoSala}/candidatos/${remoteUid}`),{from:user.uid,candidate:e.candidate.toJSON()}); };
+  peer.ontrack = event=>{
+    if(!cameras[remoteUid]) addVideo(remoteUid,"Usuario",event.streams[0]);
+  };
 
-  peers[remoteUid]=peer;
+  peer.onicecandidate = e=>{
+    if(e.candidate) push(ref(db, `salas/${codigoSala}/candidatos/${remoteUid}`), {from:user.uid, candidate:e.candidate.toJSON()});
+  };
+
+  peers[remoteUid] = peer;
 
   if(isOffer){
-    peer.createOffer().then(offer=>{
-      peer.setLocalDescription(offer);
-      set(ref(db,`salas/${codigoSala}/offers/${remoteUid}/${user.uid}`),offer.toJSON());
-    });
+    peer.onnegotiationneeded = async ()=>{
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      set(ref(db, `salas/${codigoSala}/offers/${remoteUid}/${user.uid}`), offer.toJSON());
+    };
   }
 }
 
 // Escuchar ofertas
-const offersRef=ref(db,`salas/${codigoSala}/offers/${user.uid}`);
-onValue(offersRef,snapshot=>{
-  const data=snapshot.val()||{};
+const offersRef = ref(db, `salas/${codigoSala}/offers/${user.uid}`);
+onValue(offersRef, snapshot=>{
+  const data = snapshot.val() || {};
   for(let fromUid in data){
-    const offer=data[fromUid];
-    if(!peers[fromUid]) createPeer(fromUid,false);
-    peers[fromUid].setRemoteDescription(new RTCSessionDescription(offer)).then(()=>{
-      peers[fromUid].createAnswer().then(ans=>{
-        peers[fromUid].setLocalDescription(ans);
-        set(ref(db,`salas/${codigoSala}/answers/${fromUid}/${user.uid}`),ans.toJSON());
-      });
+    const offer = data[fromUid];
+    if(!peers[fromUid]) createPeer(fromUid, false);
+    const peer = peers[fromUid];
+    peer.setRemoteDescription(new RTCSessionDescription(offer)).then(async ()=>{
+      const ans = await peer.createAnswer();
+      await peer.setLocalDescription(ans);
+      set(ref(db, `salas/${codigoSala}/answers/${fromUid}/${user.uid}`), ans.toJSON());
     });
   }
 });
 
 // Escuchar respuestas
-const answersRef=ref(db,`salas/${codigoSala}/answers/${user.uid}`);
-onValue(answersRef,snapshot=>{
-  const data=snapshot.val()||{};
+const answersRef = ref(db, `salas/${codigoSala}/answers/${user.uid}`);
+onValue(answersRef, snapshot=>{
+  const data = snapshot.val() || {};
   for(let fromUid in data){
     if(peers[fromUid]) peers[fromUid].setRemoteDescription(new RTCSessionDescription(data[fromUid]));
   }
 });
 
 // Escuchar candidatos ICE
-const candidatesRef=ref(db,`salas/${codigoSala}/candidatos/${user.uid}`);
-onValue(candidatesRef,snapshot=>{
-  const data=snapshot.val()||{};
+const candidatesRef = ref(db, `salas/${codigoSala}/candidatos/${user.uid}`);
+onValue(candidatesRef, snapshot=>{
+  const data = snapshot.val() || {};
   for(let id in data){
-    const c=data[id];
+    const c = data[id];
     if(peers[c.from]) peers[c.from].addIceCandidate(new RTCIceCandidate(c.candidate));
   }
 });
