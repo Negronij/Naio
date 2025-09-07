@@ -18,9 +18,12 @@ header img { height:35px; margin-right:12px; }
 .video-container video { width:100%; height:100%; object-fit:cover; border-radius:12px; }
 .name-placeholder { position:absolute; font-size:16px; font-weight:bold; color:#bbb; display:none; }
 .username { position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,0.6); padding:2px 6px; border-radius:6px; font-size:12px; }
-.controls { display:flex; justify-content:center; gap:10px; padding:10px; background:#1c1c2e; }
-button.video-btn { background:#3a3a50; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:14px; display:flex; align-items:center; gap:6px; transition:background 0.3s; }
+.controls { display:flex; justify-content:center; gap:20px; padding:10px; background:#1c1c2e; }
+button.video-btn { 
+  background:#3a3a50; width:60px; height:60px; border-radius:50%; border:none; cursor:pointer; display:flex; justify-content:center; align-items:center; padding:0; transition:background 0.3s; 
+}
 button.video-btn:hover { background:#56567a; }
+button.video-btn img { width:36px; height:36px; }
 #joinBtn { margin:10px auto; padding:10px 20px; font-size:16px; cursor:pointer; }
 </style>
 </head>
@@ -34,8 +37,8 @@ Naio - Sala <span id="salaCodigo"></span>
 <div id="videos"></div>
 
 <div class="controls">
-<button id="toggleCamera" class="video-btn"><img src="cam.png" width="18"> Cámara</button>
-<button id="toggleMic" class="video-btn"><img src="mic.png" width="18"> Micrófono</button>
+  <button id="toggleCamera" class="video-btn"><img src="cam.png"></button>
+  <button id="toggleMic" class="video-btn"><img src="mic.png"></button>
 </div>
 
 <button id="joinBtn">🔴 Unirse a la llamada</button>
@@ -59,7 +62,6 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
-// Variables globales
 let user, localStream;
 const peers = {};
 const cameras = {};
@@ -109,7 +111,7 @@ function addVideo(uid, nombre, stream, isLocal=false){
   return cameras[uid];
 }
 
-// Controles de cámara/micrófono
+// Controles cámara/mic
 toggleCameraBtn.addEventListener('click', ()=>{
   camOn = !camOn;
   localStream.getVideoTracks().forEach(t=>t.enabled=camOn);
@@ -125,7 +127,7 @@ toggleMicBtn.addEventListener('click', ()=>{
   toggleMicBtn.querySelector('img').src = micOn?'mic.png':'mic_off.png';
 });
 
-// Función principal para unirse
+// Unirse a la llamada (click inicial obligatorio para móviles)
 joinBtn.addEventListener('click', async ()=>{
   joinBtn.disabled = true;
   joinBtn.style.display = 'none';
@@ -161,7 +163,7 @@ function createPeer(remoteUid, isOffer){
   localStream.getTracks().forEach(t=>peer.addTrack(t, localStream));
 
   peer.ontrack = event=>{
-    if(!cameras[remoteUid]) addVideo(remoteUid,"Usuario",event.streams[0]);
+    if(!cameras[remoteUid]) addVideo(remoteUid, "Usuario", event.streams[0]);
   };
 
   peer.onicecandidate = e=>{
