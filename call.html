@@ -20,17 +20,13 @@ header img { height:35px; margin-right:12px; }
 .username { position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,0.6); padding:2px 6px; border-radius:6px; font-size:12px; }
 
 .controls { position:fixed; bottom:0; left:0; width:100%; display:flex; justify-content:center; gap:20px; padding:10px; background:#1c1c2e; z-index:10; }
-button.video-btn { 
-  background:#3a3a50; width:60px; height:60px; border-radius:50%; border:none; cursor:pointer; display:flex; justify-content:center; align-items:center; padding:0; transition:background 0.3s; 
-}
+button.video-btn { background:#3a3a50; width:60px; height:60px; border-radius:50%; border:none; cursor:pointer; display:flex; justify-content:center; align-items:center; padding:0; transition:background 0.3s; }
 button.video-btn:hover { background:#56567a; }
 button.video-btn img { width:36px; height:36px; }
 
-#joinBtn { margin:10px auto; padding:10px 20px; font-size:16px; cursor:pointer; }
-
 #extra-users { display:flex; overflow-x:auto; gap:10px; padding:10px; display:none; }
 #extra-users .video-container { min-width:150px; min-height:150px; flex-shrink:0; }
-#more-btn { margin:10px auto; padding:5px 12px; cursor:pointer; font-size:14px; background:#3a3a50; border:none; border-radius:6px; color:#fff; }
+#more-btn { margin:10px auto; padding:5px 12px; cursor:pointer; font-size:14px; background:#3a3a50; border:none; border-radius:6px; color:#fff; display:none; }
 </style>
 </head>
 <body>
@@ -50,13 +46,12 @@ Naio - Sala <span id="salaCodigo"></span>
   <button id="toggleMic" class="video-btn"><img src="mic.png"></button>
 </div>
 
-<button id="joinBtn">🔴 Unirse a la llamada</button>
-<button id="more-btn" class="hidden">+ Más</button>
+<button id="more-btn">+ Más</button>
 
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
-import { getDatabase, ref, onValue, set, push, remove } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
+import { getDatabase, ref, onValue, set, remove, push } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
@@ -80,12 +75,10 @@ const videosDiv = document.getElementById('videos');
 const extraDiv = document.getElementById('extra-users');
 const toggleCameraBtn = document.getElementById('toggleCamera');
 const toggleMicBtn = document.getElementById('toggleMic');
-const joinBtn = document.getElementById('joinBtn');
 const moreBtn = document.getElementById('more-btn');
 
 const urlParams = new URLSearchParams(window.location.search);
 const codigoSala = urlParams.get('codigo');
-if(!codigoSala) alert("Código de sala no especificado");
 document.getElementById('salaCodigo').textContent = codigoSala;
 
 // Login
@@ -119,12 +112,11 @@ function addVideo(uid, nombre, stream=null, isLocal=false){
   container.appendChild(namePlaceholder);
 
   cameras[uid] = { container, vid, namePlaceholder };
-
   updateGrid();
   return cameras[uid];
 }
 
-// Actualizar grid para mostrar hasta 4 y resto en carrusel
+// Actualizar grid hasta 4 usuarios + extra en carrusel
 function updateGrid(){
   const keys = Object.keys(cameras);
   videosDiv.innerHTML = '';
@@ -137,7 +129,7 @@ function updateGrid(){
   moreBtn.style.display = extraDiv.childElementCount>0?'block':'none';
   const cols = Math.min(2, Math.ceil(Math.min(4,keys.length)/2));
   videosDiv.style.gridTemplateColumns = `repeat(${cols},1fr)`;
-});
+}
 
 // Botones cámara/mic
 toggleCameraBtn.addEventListener('click', ()=>{
@@ -157,44 +149,37 @@ toggleMicBtn.addEventListener('click', ()=>{
   toggleMicBtn.querySelector('img').src = micOn?'mic.png':'mic_off.png';
 });
 
-// Unirse a la llamada
-joinBtn.addEventListener('click', async ()=>{
-  joinBtn.disabled = true;
-  joinBtn.style.display = 'none';
-  try {
+// Conexión a la sala
+async function joinSala(){
+  try{
     localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
-    cameras[user.uid].vid.srcObject = localStream;
-    cameras[user.uid].namePlaceholder.style.display = camOn?'none':'flex';
-    joinSala();
-  } catch(e){
+    addVideo(user.uid, user.displayName, localStream, true);
+
+    const salaRef = ref(db, `salas/${codigoSala}/usuarios/${user.uid}`);
+    set(salaRef, {name:user.displayName});
+    window.addEventListener('beforeunload',()=>remove(salaRef));
+
+    const usersRef = ref(db, `salas/${codigoSala}/usuarios`);
+    onValue(usersRef, snapshot=>{
+      const usuarios = snapshot.val() || {};
+      for(let uid in usuarios){
+        if(uid!==user.uid && !cameras[uid]) addVideo(uid, usuarios[uid].name);
+        if(uid!==user.uid && !peers[uid]) createPeer(uid, true);
+      }
+    });
+
+  }catch(e){
     alert("No se pudo acceder a cámara/micrófono: "+e.message);
   }
-});
-
-// Conectar sala
-function joinSala(){
-  const salaRef = ref(db, `salas/${codigoSala}/usuarios/${user.uid}`);
-  set(salaRef,{name:user.displayName});
-  window.addEventListener('beforeunload',()=>remove(salaRef));
-
-  const usersRef = ref(db, `salas/${codigoSala}/usuarios`);
-  onValue(usersRef, snapshot=>{
-    const usuarios = snapshot.val() || {};
-    for(let uid in usuarios){
-      if(uid !== user.uid && !cameras[uid]) addVideo(uid, usuarios[uid].name);
-      if(uid !== user.uid && !peers[uid]) createPeer(uid, !!localStream);
-    }
-  });
 }
 
-// Crear peer
+// Crear peer WebRTC
 function createPeer(remoteUid, isOffer){
-  if(!localStream) return;
   const peer = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
   localStream.getTracks().forEach(t=>peer.addTrack(t, localStream));
 
   peer.ontrack = event=>{
-    addVideo(remoteUid,"Usuario",event.streams[0]);
+    addVideo(remoteUid, "Usuario", event.streams[0]);
   };
 
   peer.onicecandidate = e=>{
@@ -212,7 +197,7 @@ function createPeer(remoteUid, isOffer){
   }
 }
 
-// Escuchar ofertas
+// Listeners Firebase para signaling
 const offersRef = ref(db, `salas/${codigoSala}/offers/${user.uid}`);
 onValue(offersRef, snapshot=>{
   const data = snapshot.val() || {};
@@ -228,7 +213,6 @@ onValue(offersRef, snapshot=>{
   }
 });
 
-// Escuchar respuestas
 const answersRef = ref(db, `salas/${codigoSala}/answers/${user.uid}`);
 onValue(answersRef, snapshot=>{
   const data = snapshot.val() || {};
@@ -237,7 +221,6 @@ onValue(answersRef, snapshot=>{
   }
 });
 
-// Escuchar candidatos ICE
 const candidatesRef = ref(db, `salas/${codigoSala}/candidatos/${user.uid}`);
 onValue(candidatesRef, snapshot=>{
   const data = snapshot.val() || {};
@@ -250,7 +233,9 @@ onValue(candidatesRef, snapshot=>{
 // Botón más
 moreBtn.addEventListener('click', ()=>extraDiv.scrollBy({left:200, behavior:'smooth'}));
 
-</script>
+// Ingresar a la sala automáticamente
+joinSala();
 
+</script>
 </body>
 </html>
