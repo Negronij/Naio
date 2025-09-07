@@ -113,18 +113,24 @@ function addVideo(uid, nombre, stream, isLocal=false){
   return cameras[uid];
 }
 
-// Controles
-let camOn=true, micOn=true;
-document.getElementById('toggleCamera').addEventListener('click',()=>{
-  camOn=!camOn;
-  localStream.getVideoTracks().forEach(t=>t.enabled=camOn);
-  cameras[user.uid].vid.style.display=camOn?'block':'none';
-  cameras[user.uid].namePlaceholder.style.display=camOn?'none':'block';
+// Controles con cambio de íconos
+const toggleCameraBtn = document.getElementById('toggleCamera');
+const toggleMicBtn = document.getElementById('toggleMic');
+let camOn = true, micOn = true;
+
+toggleCameraBtn.addEventListener('click', () => {
+    camOn = !camOn;
+    localStream.getVideoTracks().forEach(t => t.enabled = camOn);
+    cameras[user.uid].vid.style.display = camOn ? 'block' : 'none';
+    cameras[user.uid].namePlaceholder.style.display = camOn ? 'none' : 'block';
+    toggleCameraBtn.querySelector('img').src = camOn ? 'cam.png' : 'cam_off.png';
 });
-document.getElementById('toggleMic').addEventListener('click',()=>{
-  micOn=!micOn;
-  localStream.getAudioTracks().forEach(t=>t.enabled=micOn);
-  document.body.classList.toggle('muted',!micOn);
+
+toggleMicBtn.addEventListener('click', () => {
+    micOn = !micOn;
+    localStream.getAudioTracks().forEach(t => t.enabled = micOn);
+    document.body.classList.toggle('muted', !micOn);
+    toggleMicBtn.querySelector('img').src = micOn ? 'mic.png' : 'mic_off.png';
 });
 
 // Unirse a la sala
