@@ -51,7 +51,7 @@ Naio - Sala <span id="salaCodigo"></span>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
-import { getDatabase, ref, onValue, set, remove, push } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
+import { getDatabase, ref, onValue, set, remove, push, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
@@ -81,13 +81,20 @@ const urlParams = new URLSearchParams(window.location.search);
 const codigoSala = urlParams.get('codigo');
 document.getElementById('salaCodigo').textContent = codigoSala;
 
-// Login
-auth.onAuthStateChanged(u=>{
+// Estado online/offline
+let onlineRef;
+
+auth.onAuthStateChanged(async u=>{
   if(!u){ alert("Debes iniciar sesión"); window.location.href="index.html"; }
-  else user = u;
+  else{
+    user = u;
+    onlineRef = ref(db, `salas/${codigoSala}/usuarios/${user.uid}`);
+    await set(onlineRef, {name:user.displayName, online:true, lastUpdate:serverTimestamp()});
+    window.addEventListener('beforeunload',()=>remove(onlineRef));
+    startCall();
+  }
 });
 
-// Función agregar video
 function addVideo(uid, nombre, stream=null, isLocal=false){
   if(cameras[uid]) return cameras[uid];
   const container = document.createElement('div');
@@ -116,7 +123,6 @@ function addVideo(uid, nombre, stream=null, isLocal=false){
   return cameras[uid];
 }
 
-// Actualizar grid hasta 4 usuarios + extra en carrusel
 function updateGrid(){
   const keys = Object.keys(cameras);
   videosDiv.innerHTML = '';
@@ -131,7 +137,6 @@ function updateGrid(){
   videosDiv.style.gridTemplateColumns = `repeat(${cols},1fr)`;
 }
 
-// Botones cámara/mic
 toggleCameraBtn.addEventListener('click', ()=>{
   if(!localStream) return;
   camOn = !camOn;
@@ -149,15 +154,12 @@ toggleMicBtn.addEventListener('click', ()=>{
   toggleMicBtn.querySelector('img').src = micOn?'mic.png':'mic_off.png';
 });
 
-// Conexión a la sala
-async function joinSala(){
+moreBtn.addEventListener('click', ()=>extraDiv.scrollBy({left:200, behavior:'smooth'}));
+
+async function startCall(){
   try{
     localStream = await navigator.mediaDevices.getUserMedia({video:true,audio:true});
     addVideo(user.uid, user.displayName, localStream, true);
-
-    const salaRef = ref(db, `salas/${codigoSala}/usuarios/${user.uid}`);
-    set(salaRef, {name:user.displayName});
-    window.addEventListener('beforeunload',()=>remove(salaRef));
 
     const usersRef = ref(db, `salas/${codigoSala}/usuarios`);
     onValue(usersRef, snapshot=>{
@@ -168,12 +170,9 @@ async function joinSala(){
       }
     });
 
-  }catch(e){
-    alert("No se pudo acceder a cámara/micrófono: "+e.message);
-  }
+  }catch(e){ alert("No se pudo acceder a cámara/micrófono: "+e.message); }
 }
 
-// Crear peer WebRTC
 function createPeer(remoteUid, isOffer){
   const peer = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
   localStream.getTracks().forEach(t=>peer.addTrack(t, localStream));
@@ -183,59 +182,50 @@ function createPeer(remoteUid, isOffer){
   };
 
   peer.onicecandidate = e=>{
-    if(e.candidate) push(ref(db, `salas/${codigoSala}/candidatos/${remoteUid}`), {from:user.uid, candidate:e.candidate.toJSON()});
+    if(e.candidate) push(ref(db, `salas/${codigoSala}/candidatos/${remoteUid}`), {from:user.uid, candidate:e.candidate});
   };
 
   peers[remoteUid] = peer;
 
   if(isOffer){
-    peer.onnegotiationneeded = async ()=>{
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      set(ref(db, `salas/${codigoSala}/offers/${remoteUid}/${user.uid}`), offer.toJSON());
-    };
+    peer.createOffer().then(o=>peer.setLocalDescription(o)).then(()=>{
+      set(ref(db, `salas/${codigoSala}/ofertas/${remoteUid}/${user.uid}`), peer.localDescription.toJSON());
+    });
   }
 }
 
-// Listeners Firebase para signaling
-const offersRef = ref(db, `salas/${codigoSala}/offers/${user.uid}`);
-onValue(offersRef, snapshot=>{
-  const data = snapshot.val() || {};
-  for(let fromUid in data){
-    const offer = data[fromUid];
-    if(!peers[fromUid]) createPeer(fromUid,false);
-    const peer = peers[fromUid];
-    peer.setRemoteDescription(new RTCSessionDescription(offer)).then(async ()=>{
-      const ans = await peer.createAnswer();
-      await peer.setLocalDescription(ans);
-      set(ref(db, `salas/${codigoSala}/answers/${fromUid}/${user.uid}`), ans.toJSON());
+// Escuchar ofertas
+onValue(ref(db, `salas/${codigoSala}/ofertas/${user.uid}`), snapshot=>{
+  const ofertas = snapshot.val()||{};
+  for(let from in ofertas){
+    if(!peers[from]) createPeer(from,false);
+    const peer = peers[from];
+    peer.setRemoteDescription(ofertas[from]).then(()=>{
+      peer.createAnswer().then(a=>{
+        peer.setLocalDescription(a).then(()=>{
+          set(ref(db, `salas/${codigoSala}/respuestas/${from}/${user.uid}`), a.toJSON());
+        });
+      });
     });
   }
 });
 
-const answersRef = ref(db, `salas/${codigoSala}/answers/${user.uid}`);
-onValue(answersRef, snapshot=>{
-  const data = snapshot.val() || {};
-  for(let fromUid in data){
-    if(peers[fromUid]) peers[fromUid].setRemoteDescription(new RTCSessionDescription(data[fromUid]));
+// Escuchar respuestas
+onValue(ref(db, `salas/${codigoSala}/respuestas/${user.uid}`), snapshot=>{
+  const respuestas = snapshot.val()||{};
+  for(let from in respuestas){
+    if(peers[from]) peers[from].setRemoteDescription(respuestas[from]);
   }
 });
 
-const candidatesRef = ref(db, `salas/${codigoSala}/candidatos/${user.uid}`);
-onValue(candidatesRef, snapshot=>{
-  const data = snapshot.val() || {};
-  for(let id in data){
-    const c = data[id];
-    if(peers[c.from]) peers[c.from].addIceCandidate(new RTCIceCandidate(c.candidate));
+// Escuchar ICE candidates
+onValue(ref(db, `salas/${codigoSala}/candidatos/${user.uid}`), snapshot=>{
+  const cands = snapshot.val()||{};
+  for(let key in cands){
+    const c = cands[key];
+    if(peers[c.from]) peers[c.from].addIceCandidate(c.candidate);
   }
 });
-
-// Botón más
-moreBtn.addEventListener('click', ()=>extraDiv.scrollBy({left:200, behavior:'smooth'}));
-
-// Ingresar a la sala automáticamente
-joinSala();
-
 </script>
 </body>
 </html>
