@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Naio - Llamada</title>
+<link rel="icon" href="Naio.png">
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
+import { getAuth } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
+import { getDatabase, ref, onValue, set } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
+
+// Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
+  authDomain: "naio1092ngs.firebaseapp.com",
+  projectId: "naio1092ngs",
+  storageBucket: "naio1092ngs.firebasestorage.app",
+  messagingSenderId: "874452485775",
+  appId: "1:874452485775:web:25e5ed586fcebe93e952fa",
+  measurementId: "G-JBK153N8XL"
+};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getDatabase(app);
+
+// Obtener usuario logueado
+let user;
+auth.onAuthStateChanged(u => {
+  if (!u) {
+    alert("Debes iniciar sesión primero");
+    window.location.href = "index.html";
+  } else user = u;
+});
+
+// Obtener código de sala desde query string
+const urlParams = new URLSearchParams(window.location.search);
+const codigoSala = urlParams.get('codigo');
+if(!codigoSala) alert("Código de sala no especificado");
+
+window.codigoSala = codigoSala;
+
+</script>
+<style>
+body { margin:0; font-family:Arial; background:#0f0f1a; color:#fff; display:flex; flex-direction:column; height:100vh; }
+header { display:flex; align-items:center; padding:10px 20px; background:#1c1c2e; font-size:22px; font-weight:bold; }
+header img { height:35px; margin-right:12px; }
+#videos { flex:1; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); grid-auto-rows:180px; gap:10px; padding:10px; box-sizing:border-box; }
+.video-container { position:relative; background:#222; border-radius:12px; overflow:hidden; display:flex; justify-content:center; align-items:center; }
+.video-container video { width:100%; height:100%; object-fit:cover; }
+.username { position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,0.6); padding:2px 6px; border-radius:6px; font-size:12px; }
+.overlay { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) scale(0.5); background:rgba(0,0,0,0.7); padding:8px 12px; border-radius:12px; font-size:14px; opacity:0; transition:all 0.3s ease; }
+.overlay.active { opacity:1; transform:translate(-50%,-50%) scale(1);}
+.controls { display:flex; justify-content:center; gap:10px; padding:10px; background:#1c1c2e; }
+button.video-btn { background:#3a3a50; color:#fff; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:14px; transition:background 0.3s; }
+button.video-btn:hover { background:#56567a; }
+.hidden { display:none; }
+.name-placeholder { font-size:16px; font-weight:bold; color:#bbb; }
+body.muted { background:#2a0f0f; }
+</style>
+</head>
+<body>
+
+<header>
+<img src="Naio.png" alt="Logo Naio">
+Naio - Sala <span id="salaCodigo"></span>
+</header>
+
+<div id="videos"></div>
+
+<div class="controls">
+<button id="toggleCamera" class="video-btn">📷 Cámara</button>
+<button id="toggleMic" class="video-btn">🎤 Micrófono</button>
+</div>
+
+<script type="module">
+const videosDiv = document.getElementById('videos');
+document.getElementById('salaCodigo').textContent = codigoSala;
+
+let cameraOn = true;
+let micOn = true;
+let localStream;
+
+// Obtener cámara y micrófono
+navigator.mediaDevices.getUserMedia({ video:true, audio:true })
+.then(stream => {
+  localStream = stream;
+  addVideo(user.displayName, stream, true);
+  joinSala();
+})
+.catch(err => console.error(err));
+
+function addVideo(nombre, stream, isLocal=false) {
+  const container = document.createElement('div');
+  container.classList.add('video-container');
+  
+  const vid = document.createElement('video');
+  vid.autoplay = true;
+  vid.muted = isLocal;
+  vid.srcObject = stream;
+  container.appendChild(vid);
+
+  const usernameDiv = document.createElement('div');
+  usernameDiv.classList.add('username');
+  usernameDiv.textContent = nombre;
+  container.appendChild(usernameDiv);
+
+  const namePlaceholder = document.createElement('div');
+  namePlaceholder.classList.add('name-placeholder','hidden');
+  namePlaceholder.textContent = nombre;
+  container.appendChild(namePlaceholder);
+
+  const overlay = document.createElement('div');
+  overlay.classList.add('overlay');
+  container.appendChild(overlay);
+
+  videosDiv.appendChild(container);
+  return { container, vid, overlay, namePlaceholder };
+}
+
+function showOverlay(overlay, msg) {
+  overlay.textContent = msg;
+  overlay.classList.add('active');
+  setTimeout(()=>overlay.classList.remove('active'),1500);
+}
+
+// Controles
+document.getElementById('toggleCamera').addEventListener('click',()=>{
+  cameraOn=!cameraOn;
+  localStream.getVideoTracks().forEach(t=>t.enabled=cameraOn);
+  document.querySelector('.video-container video').style.display=cameraOn?'block':'none';
+  document.querySelector('.name-placeholder').classList.toggle('hidden',cameraOn);
+});
+document.getElementById('toggleMic').addEventListener('click',()=>{
+  micOn=!micOn;
+  localStream.getAudioTracks().forEach(t=>t.enabled=micOn);
+  document.body.classList.toggle('muted',!micOn);
+});
+
+// Función para unirse a la sala en Firebase
+function joinSala() {
+  const salaRef = ref(db,'salas/'+codigoSala+'/usuarios/'+user.uid);
+  set(salaRef, user.displayName);
+
+  // Escuchar cambios en la sala
+  const salaUsuariosRef = ref(db,'salas/'+codigoSala+'/usuarios');
+  onValue(salaUsuariosRef, snapshot => {
+    const usuarios = snapshot.val();
+    // TODO: Aquí irían las conexiones WebRTC reales para cada usuario
+    console.log('Usuarios en sala:',usuarios);
+  });
+}
+
+</script>
+
+</body>
+</html>
