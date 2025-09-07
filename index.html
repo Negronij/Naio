@@ -5,12 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Naio - Inicio</title>
 <link rel="icon" href="Naio.png">
+
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
-import { getDatabase, ref, set, get } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
+import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
 
-// Config Firebase
+// Firebase config
 const firebaseConfig = {
   apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
   authDomain: "naio1092ngs.firebaseapp.com",
@@ -24,88 +25,149 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
+let currentUser;
+
 // Login con Google
-window.loginWithGoogle = () => {
+window.loginWithGoogle = async () => {
   const provider = new GoogleAuthProvider();
-  signInWithPopup(auth, provider)
-    .then((result) => {
-      document.getElementById('login').style.display = 'none';
-      document.getElementById('lobby').style.display = 'flex';
-      document.getElementById('usuarioNombre').textContent = result.user.displayName;
-    })
-    .catch(err => console.error(err));
+  try {
+    const result = await signInWithPopup(auth, provider);
+    currentUser = result.user;
+    showLobby();
+  } catch(err) {
+    console.error(err);
+    alert("Error al iniciar sesión");
+  }
 }
 
-// Función para crear sala
-window.crearSala = () => {
-  const user = auth.currentUser;
-  if(!user) return alert("Debes iniciar sesión primero");
+// Mostrar Lobby
+function showLobby(){
+  document.getElementById('login').style.display='none';
+  document.getElementById('lobby').style.display='flex';
+  document.getElementById('usuarioNombre').textContent = currentUser.displayName;
+}
 
+// Crear sala
+window.crearSala = async () => {
+  if(!currentUser) return alert("Debes iniciar sesión primero");
   const codigo = Math.random().toString(36).substring(2,8).toUpperCase();
-  const salaRef = ref(db, 'salas/' + codigo);
-  
-  set(salaRef, {
+  const salaRef = ref(db,'salas/'+codigo);
+  await set(salaRef, {
     codigo: codigo,
     usuarios: {
-      [user.uid]: user.displayName
+      [currentUser.uid]: currentUser.displayName
     }
-  }).then(()=>{
-    // Redirigir a call.html con el código de sala
-    window.location.href = `call.html?codigo=${codigo}`;
-  }).catch(err => console.error(err));
+  });
+  window.location.href = `call.html?codigo=${codigo}`;
 }
 
-// Función para unirse a sala
-window.unirseSala = () => {
+// Unirse a sala
+window.unirseSala = async () => {
   const codigo = document.getElementById('codigoSala').value.toUpperCase();
-  const user = auth.currentUser;
-  if(!user) return alert("Debes iniciar sesión primero");
+  if(!currentUser) return alert("Debes iniciar sesión primero");
   if(!codigo) return alert("Ingresa un código de sala");
 
-  const salaRef = ref(db, 'salas/' + codigo);
-  get(salaRef).then(snapshot => {
-    if(snapshot.exists()){
-      // Agregar usuario a la sala
-      set(ref(db,'salas/'+codigo+'/usuarios/'+user.uid), user.displayName)
-        .then(()=> {
-          window.location.href = `call.html?codigo=${codigo}`;
-        });
-    } else alert("Sala no encontrada");
-  });
+  const salaRef = ref(db,'salas/'+codigo);
+  const snapshot = await get(salaRef);
+  if(!snapshot.exists()) return alert("Sala no encontrada");
+  
+  await set(ref(db,'salas/'+codigo+'/usuarios/'+currentUser.uid), currentUser.displayName);
+  window.location.href = `call.html?codigo=${codigo}`;
 }
+
+// Ver participantes
+window.verParticipantes = async () => {
+  const codigo = document.getElementById('codigoSala').value.toUpperCase();
+  if(!currentUser) return alert("Debes iniciar sesión primero");
+  if(!codigo) return alert("Ingresa un código de sala");
+
+  const salaRef = ref(db,'salas/'+codigo+'/usuarios');
+  const snapshot = await get(salaRef);
+  if(!snapshot.exists()) return alert("Sala no encontrada");
+
+  const usuarios = snapshot.val();
+  const listDiv = document.getElementById('participantesList');
+  listDiv.innerHTML = '';
+  for(let uid in usuarios){
+    const div = document.createElement('div');
+    div.textContent = usuarios[uid];
+    div.className = 'participant';
+    listDiv.appendChild(div);
+  }
+  document.getElementById('participantesModal').style.display='flex';
+}
+
+// Cerrar modal participantes
+window.cerrarParticipantes = () => {
+  document.getElementById('participantesModal').style.display='none';
+}
+
+// Mostrar login al cargar
+document.getElementById('login').style.display='flex';
+
 </script>
+
 <style>
-body { margin:0; font-family: Arial; background:#0f0f1a; color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; }
-#login, #lobby { display:none; flex-direction:column; align-items:center; gap:20px; }
-button { padding:10px 20px; border:none; border-radius:8px; background:#4285F4; color:#fff; cursor:pointer; font-size:16px; display:flex; align-items:center; gap:8px; }
+body { margin:0; font-family:Arial; background:#0f0f1a; color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; overflow:hidden; }
+#login,#lobby { display:none; flex-direction:column; align-items:center; gap:20px; animation:fadeIn 1s; }
+button { cursor:pointer; font-size:16px; border:none; border-radius:8px; padding:10px 20px; display:flex; align-items:center; gap:8px; }
+#login button { background:#FF6F00; } /* Google naranja */
 input { padding:8px; border-radius:6px; border:none; font-size:16px; text-align:center; }
+
+h1#welcome { font-size:32px; animation:logoAnim 1.5s ease; text-align:center; margin-bottom:20px; }
+
+.participant { background:rgba(255,255,255,0.1); padding:6px 12px; border-radius:6px; margin:4px 0; }
+
+#participantesModal {
+  position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); display:none; flex-direction:column; align-items:center; justify-content:center;
+}
+#participantesList { display:flex; flex-direction:column; gap:8px; max-height:50%; overflow-y:auto; margin-bottom:20px; }
+#participantesModal button { background:#FF6F00; }
+
+@keyframes logoAnim{
+  0% { transform:scale(0) rotate(0deg); opacity:0; }
+  50% { transform:scale(1.2) rotate(360deg); opacity:1; }
+  100% { transform:scale(1) rotate(0deg); opacity:1; }
+}
+
+@keyframes fadeIn{
+  from { opacity:0; }
+  to { opacity:1; }
+}
+
 </style>
+
 </head>
 <body>
 
-<!-- Login con Google -->
+<h1 id="welcome">Bienvenidos a Naio</h1>
+<img src="Naio.png" alt="Logo Naio" style="height:120px; margin-bottom:20px; animation:logoAnim 1.5s ease;">
+
+<!-- Login -->
 <div id="login">
   <button onclick="loginWithGoogle()">
-    <img src="google.png" alt="Google Logo" style="height:24px;">
-    Iniciar sesión con Google
+    <img src="google.png" alt="Google" style="height:24px;"> Iniciar sesión con Google
   </button>
 </div>
 
-<!-- Lobby: crear o unirse a sala -->
+<!-- Lobby -->
 <div id="lobby">
   <h2>Bienvenido <span id="usuarioNombre"></span></h2>
   <div style="display:flex; flex-direction:column; gap:12px; align-items:center;">
     <button onclick="crearSala()">Crear Sala</button>
-    <div>
+    <div style="display:flex; gap:8px;">
       <input type="text" id="codigoSala" placeholder="Código de sala">
-      <button onclick="unirseSala()">Unirse a Sala</button>
+      <button onclick="unirseSala()">Unirse</button>
+      <button onclick="verParticipantes()">Ver participantes</button>
     </div>
   </div>
 </div>
 
-<script>
-  // Mostrar login al inicio
-  document.getElementById('login').style.display = 'flex';
-</script>
+<!-- Modal participantes -->
+<div id="participantesModal">
+  <div id="participantesList"></div>
+  <button onclick="cerrarParticipantes()">Cerrar</button>
+</div>
+
 </body>
 </html>
