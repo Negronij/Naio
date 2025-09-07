@@ -8,9 +8,9 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
-import { getDatabase, ref, set, get, child, push } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
+import { getDatabase, ref, set, get } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
 
-// Config de Firebase
+// Config Firebase
 const firebaseConfig = {
   apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
   authDomain: "naio1092ngs.firebaseapp.com",
@@ -36,41 +36,41 @@ window.loginWithGoogle = () => {
     .catch(err => console.error(err));
 }
 
-// Crear sala
+// Función para crear sala
 window.crearSala = () => {
-  const codigo = Math.random().toString(36).substring(2,8).toUpperCase();
   const user = auth.currentUser;
   if(!user) return alert("Debes iniciar sesión primero");
-  
+
+  const codigo = Math.random().toString(36).substring(2,8).toUpperCase();
   const salaRef = ref(db, 'salas/' + codigo);
+  
   set(salaRef, {
     codigo: codigo,
     usuarios: {
       [user.uid]: user.displayName
     }
-  }).then(() => {
-    document.getElementById('codigoSala').value = codigo;
-    document.getElementById('linkSala').textContent = `Sala creada: ${codigo}`;
-  });
+  }).then(()=>{
+    // Redirigir a call.html con el código de sala
+    window.location.href = `call.html?codigo=${codigo}`;
+  }).catch(err => console.error(err));
 }
 
-// Unirse a sala
+// Función para unirse a sala
 window.unirseSala = () => {
   const codigo = document.getElementById('codigoSala').value.toUpperCase();
   const user = auth.currentUser;
   if(!user) return alert("Debes iniciar sesión primero");
+  if(!codigo) return alert("Ingresa un código de sala");
 
   const salaRef = ref(db, 'salas/' + codigo);
   get(salaRef).then(snapshot => {
-    if(snapshot.exists()) {
-      const sala = snapshot.val();
-      sala.usuarios[user.uid] = user.displayName;
-      set(salaRef, sala).then(() => {
-        document.getElementById('linkSala').textContent = `Unido a la sala: ${codigo}`;
-      });
-    } else {
-      alert("Sala no encontrada");
-    }
+    if(snapshot.exists()){
+      // Agregar usuario a la sala
+      set(ref(db,'salas/'+codigo+'/usuarios/'+user.uid), user.displayName)
+        .then(()=> {
+          window.location.href = `call.html?codigo=${codigo}`;
+        });
+    } else alert("Sala no encontrada");
   });
 }
 </script>
@@ -83,6 +83,7 @@ input { padding:8px; border-radius:6px; border:none; font-size:16px; text-align:
 </head>
 <body>
 
+<!-- Login con Google -->
 <div id="login">
   <button onclick="loginWithGoogle()">
     <img src="google.png" alt="Google Logo" style="height:24px;">
@@ -90,14 +91,16 @@ input { padding:8px; border-radius:6px; border:none; font-size:16px; text-align:
   </button>
 </div>
 
+<!-- Lobby: crear o unirse a sala -->
 <div id="lobby">
   <h2>Bienvenido <span id="usuarioNombre"></span></h2>
-  <div>
+  <div style="display:flex; flex-direction:column; gap:12px; align-items:center;">
     <button onclick="crearSala()">Crear Sala</button>
-    <input type="text" id="codigoSala" placeholder="Código de sala">
-    <button onclick="unirseSala()">Unirse a Sala</button>
+    <div>
+      <input type="text" id="codigoSala" placeholder="Código de sala">
+      <button onclick="unirseSala()">Unirse a Sala</button>
+    </div>
   </div>
-  <p id="linkSala"></p>
 </div>
 
 <script>
