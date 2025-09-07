@@ -9,9 +9,8 @@
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
-import { getDatabase, ref, set, get, onValue } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
+import { getDatabase, ref, set, get } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
 
-// Firebase config
 const firebaseConfig = {
   apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
   authDomain: "naio1092ngs.firebaseapp.com",
@@ -42,8 +41,8 @@ window.loginWithGoogle = async () => {
 
 // Mostrar Lobby
 function showLobby(){
-  document.getElementById('login').style.display='none';
-  document.getElementById('lobby').style.display='flex';
+  document.getElementById('welcomeScreen').style.display='none';
+  document.getElementById('loginScreen').style.display='flex';
   document.getElementById('usuarioNombre').textContent = currentUser.displayName;
 }
 
@@ -67,7 +66,7 @@ window.unirseSala = async () => {
   if(!currentUser) return alert("Debes iniciar sesión primero");
   if(!codigo) return alert("Ingresa un código de sala");
 
-  const salaRef = ref(db,'salas/'+codigo);
+  const salaRef = ref(db,'salas/' + codigo);
   const snapshot = await get(salaRef);
   if(!snapshot.exists()) return alert("Sala no encontrada");
   
@@ -81,7 +80,7 @@ window.verParticipantes = async () => {
   if(!currentUser) return alert("Debes iniciar sesión primero");
   if(!codigo) return alert("Ingresa un código de sala");
 
-  const salaRef = ref(db,'salas/'+codigo+'/usuarios');
+  const salaRef = ref(db,'salas/' + codigo + '/usuarios');
   const snapshot = await get(salaRef);
   if(!snapshot.exists()) return alert("Sala no encontrada");
 
@@ -102,19 +101,21 @@ window.cerrarParticipantes = () => {
   document.getElementById('participantesModal').style.display='none';
 }
 
-// Mostrar login al cargar
-document.getElementById('login').style.display='flex';
-
 </script>
 
 <style>
 body { margin:0; font-family:Arial; background:#0f0f1a; color:#fff; display:flex; flex-direction:column; align-items:center; justify-content:center; height:100vh; overflow:hidden; }
-#login,#lobby { display:none; flex-direction:column; align-items:center; gap:20px; animation:fadeIn 1s; }
-button { cursor:pointer; font-size:16px; border:none; border-radius:8px; padding:10px 20px; display:flex; align-items:center; gap:8px; }
-#login button { background:#FF6F00; } /* Google naranja */
-input { padding:8px; border-radius:6px; border:none; font-size:16px; text-align:center; }
 
-h1#welcome { font-size:32px; animation:logoAnim 1.5s ease; text-align:center; margin-bottom:20px; }
+#welcomeScreen, #loginScreen { display:none; flex-direction:column; align-items:center; justify-content:center; gap:20px; }
+
+#welcomeLogo { height:150px; animation:logoIntro 1.8s ease forwards; }
+
+#loginScreen h2 { font-size:28px; text-align:center; margin-bottom:20px; animation:welcomeFade 1.2s ease forwards; opacity:0; }
+button { cursor:pointer; font-size:16px; border:none; border-radius:8px; padding:10px 20px; display:flex; align-items:center; gap:8px; transition:transform 0.2s; }
+button:hover { transform:scale(1.05); }
+#loginScreen button { background:#FF6F00; color:#fff; }
+
+input { padding:8px; border-radius:6px; border:none; font-size:16px; text-align:center; }
 
 .participant { background:rgba(255,255,255,0.1); padding:6px 12px; border-radius:6px; margin:4px 0; }
 
@@ -122,44 +123,46 @@ h1#welcome { font-size:32px; animation:logoAnim 1.5s ease; text-align:center; ma
   position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.85); display:none; flex-direction:column; align-items:center; justify-content:center;
 }
 #participantesList { display:flex; flex-direction:column; gap:8px; max-height:50%; overflow-y:auto; margin-bottom:20px; }
-#participantesModal button { background:#FF6F00; }
+#participantesModal button { background:#FF6F00; color:#fff; border-radius:6px; padding:10px 20px; border:none; cursor:pointer; }
 
-@keyframes logoAnim{
-  0% { transform:scale(0) rotate(0deg); opacity:0; }
-  50% { transform:scale(1.2) rotate(360deg); opacity:1; }
-  100% { transform:scale(1) rotate(0deg); opacity:1; }
+@keyframes logoIntro{
+  0% { transform: scale(0) rotate(0deg); opacity:0; }
+  50% { transform: scale(1.3) rotate(360deg); opacity:1; }
+  100% { transform: scale(1) rotate(0deg); opacity:1; }
 }
-
-@keyframes fadeIn{
-  from { opacity:0; }
-  to { opacity:1; }
+@keyframes welcomeFade{
+  from { opacity:0; transform:translateY(20px); }
+  to { opacity:1; transform:translateY(0); }
 }
 
 </style>
-
 </head>
 <body>
 
-<h1 id="welcome">Bienvenidos a Naio</h1>
-<img src="Naio.png" alt="Logo Naio" style="height:120px; margin-bottom:20px; animation:logoAnim 1.5s ease;">
-
-<!-- Login -->
-<div id="login">
-  <button onclick="loginWithGoogle()">
-    <img src="google.png" alt="Google" style="height:24px;"> Iniciar sesión con Google
-  </button>
+<!-- Animación inicial del logo -->
+<div id="welcomeScreen">
+  <img id="welcomeLogo" src="Naio.png" alt="Logo Naio">
 </div>
 
-<!-- Lobby -->
-<div id="lobby">
-  <h2>Bienvenido <span id="usuarioNombre"></span></h2>
-  <div style="display:flex; flex-direction:column; gap:12px; align-items:center;">
+<!-- Pantalla de bienvenida con login -->
+<div id="loginScreen">
+  <h2>Bienvenido a Naio</h2>
+  <img src="Naio.png" alt="Logo" style="height:100px; margin-bottom:20px;">
+  <div id="login">
+    <button onclick="loginWithGoogle()">
+      <img src="google.png" alt="Google" style="height:24px;"> Iniciar sesión con Google
+    </button>
+  </div>
+
+  <!-- Lobby: crear o unirse a sala -->
+  <div id="lobby" style="display:flex; flex-direction:column; align-items:center; gap:12px;">
     <button onclick="crearSala()">Crear Sala</button>
     <div style="display:flex; gap:8px;">
       <input type="text" id="codigoSala" placeholder="Código de sala">
       <button onclick="unirseSala()">Unirse</button>
       <button onclick="verParticipantes()">Ver participantes</button>
     </div>
+    <span id="usuarioNombre" style="margin-top:12px;"></span>
   </div>
 </div>
 
@@ -168,6 +171,14 @@ h1#welcome { font-size:32px; animation:logoAnim 1.5s ease; text-align:center; ma
   <div id="participantesList"></div>
   <button onclick="cerrarParticipantes()">Cerrar</button>
 </div>
+
+<script>
+  // Iniciar animación: después de 2s mostrar loginScreen
+  setTimeout(()=>{
+    document.getElementById('welcomeScreen').style.display='none';
+    document.getElementById('loginScreen').style.display='flex';
+  }, 2000);
+</script>
 
 </body>
 </html>
