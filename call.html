@@ -12,14 +12,12 @@ body.muted { background:#2a0f0f; }
 header { display:flex; align-items:center; padding:10px 20px; background:#1c1c2e; font-size:22px; font-weight:bold; }
 header img { height:35px; margin-right:12px; }
 
-#videos { flex:1; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); grid-auto-rows:180px; gap:10px; padding:10px; box-sizing:border-box; }
+#videos { flex:1; display:grid; grid-template-columns:repeat(auto-fit, minmax(180px,1fr)); grid-auto-rows:180px; gap:10px; padding:10px; box-sizing:border-box; overflow:auto; }
 
 .video-container { position:relative; background:#222; border-radius:12px; overflow:hidden; display:flex; justify-content:center; align-items:center; }
 .video-container video { width:100%; height:100%; object-fit:cover; border-radius:12px; }
 .name-placeholder { position:absolute; font-size:16px; font-weight:bold; color:#bbb; display:none; }
-
 .username { position:absolute; bottom:4px; left:4px; background:rgba(0,0,0,0.6); padding:2px 6px; border-radius:6px; font-size:12px; }
-
 .overlay { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%) scale(0.5); background:rgba(0,0,0,0.7); padding:8px 12px; border-radius:12px; font-size:14px; opacity:0; transition:all 0.3s ease; }
 .overlay.active { opacity:1; transform:translate(-50%,-50%) scale(1); }
 
@@ -49,6 +47,7 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.6.0/firebas
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-auth.js";
 import { getDatabase, ref, onValue, set, push, remove } from "https://www.gstatic.com/firebasejs/10.6.0/firebase-database.js";
 
+// Firebase
 const firebaseConfig = {
   apiKey: "AIzaSyCmzxzDSJFPt7-fDti1PRC-boDE30cJEbM",
   authDomain: "naio1092ngs.firebaseapp.com",
@@ -62,53 +61,56 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getDatabase(app);
 
+// Usuario logueado
 let user;
 auth.onAuthStateChanged(u => {
-  if (!u) { alert("Debes iniciar sesión primero"); window.location.href="index.html"; }
+  if(!u){ alert("Debes iniciar sesión"); window.location.href="index.html"; }
   else user=u;
 });
 
+// Código sala
 const urlParams = new URLSearchParams(window.location.search);
 const codigoSala = urlParams.get('codigo');
 if(!codigoSala) alert("Código de sala no especificado");
 document.getElementById('salaCodigo').textContent = codigoSala;
 
+// Variables
 const videosDiv = document.getElementById('videos');
 let localStream;
-let peers = {}; // Para guardar RTCPeerConnections
-let cameras = {}; // Guardar contenedores de cada usuario
+let peers = {};
+let cameras = {};
 
 // Obtener cámara y micrófono
 navigator.mediaDevices.getUserMedia({video:true, audio:true})
-.then(stream => {
-  localStream = stream;
+.then(stream=>{
+  localStream=stream;
   addVideo(user.uid, user.displayName, stream, true);
   joinSala();
-})
-.catch(err => console.error(err));
+}).catch(err=>console.error(err));
 
+// Función para agregar video
 function addVideo(uid, nombre, stream, isLocal=false){
-  let container = document.createElement('div');
+  if(cameras[uid]) return cameras[uid];
+  let container=document.createElement('div');
   container.classList.add('video-container');
 
-  let vid = document.createElement('video');
-  vid.autoplay = true;
-  vid.muted = isLocal;
-  vid.srcObject = stream;
+  let vid=document.createElement('video');
+  vid.autoplay=true; vid.muted=isLocal; vid.srcObject=stream;
   container.appendChild(vid);
 
-  let usernameDiv = document.createElement('div');
+  let usernameDiv=document.createElement('div');
   usernameDiv.classList.add('username');
-  usernameDiv.textContent = nombre;
+  usernameDiv.textContent=nombre;
   container.appendChild(usernameDiv);
 
-  let namePlaceholder = document.createElement('div');
+  let namePlaceholder=document.createElement('div');
   namePlaceholder.classList.add('name-placeholder');
-  namePlaceholder.textContent = nombre;
+  namePlaceholder.textContent=nombre;
   container.appendChild(namePlaceholder);
 
   videosDiv.appendChild(container);
-  cameras[uid] = {container, vid, namePlaceholder};
+  cameras[uid]={container, vid, namePlaceholder};
+  return cameras[uid];
 }
 
 // Controles
@@ -116,88 +118,81 @@ let camOn=true, micOn=true;
 document.getElementById('toggleCamera').addEventListener('click',()=>{
   camOn=!camOn;
   localStream.getVideoTracks().forEach(t=>t.enabled=camOn);
-  cameras[user.uid].vid.style.display = camOn?'block':'none';
-  cameras[user.uid].namePlaceholder.style.display = camOn?'none':'block';
+  cameras[user.uid].vid.style.display=camOn?'block':'none';
+  cameras[user.uid].namePlaceholder.style.display=camOn?'none':'block';
 });
-
 document.getElementById('toggleMic').addEventListener('click',()=>{
   micOn=!micOn;
   localStream.getAudioTracks().forEach(t=>t.enabled=micOn);
   document.body.classList.toggle('muted',!micOn);
 });
 
-// WebRTC + Firebase signaling
-const salaRef = ref(db,'salas/'+codigoSala+'/usuarios/'+user.uid);
-set(salaRef, {name:user.displayName});
-window.addEventListener('beforeunload',()=>remove(salaRef));
+// Unirse a la sala
+function joinSala(){
+  const salaRef=ref(db,'salas/'+codigoSala+'/usuarios/'+user.uid);
+  set(salaRef,{name:user.displayName});
+  window.addEventListener('beforeunload',()=>remove(salaRef));
 
-const usersRef = ref(db,'salas/'+codigoSala+'/usuarios');
-onValue(usersRef, snapshot=>{
-  const usuarios = snapshot.val() || {};
-  for(let uid in usuarios){
-    if(uid===user.uid) continue;
-    if(!peers[uid]) createPeer(uid);
-  }
-});
+  const usersRef=ref(db,'salas/'+codigoSala+'/usuarios');
+  onValue(usersRef, snapshot=>{
+    const usuarios = snapshot.val() || {};
+    for(let uid in usuarios){
+      if(uid!==user.uid && !peers[uid]){
+        createPeer(uid, true);
+      }
+    }
+  });
+}
 
-function createPeer(remoteUid){
-  const peer = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+// Crear PeerConnection
+function createPeer(remoteUid, isOffer){
+  const peer=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
   localStream.getTracks().forEach(t=>peer.addTrack(t, localStream));
 
-  peer.ontrack = (event)=>{
-    if(!cameras[remoteUid]) addVideo(remoteUid, "Usuario", event.streams[0]);
-  };
+  peer.ontrack = (event)=>{ if(!cameras[remoteUid]) addVideo(remoteUid,"Usuario",event.streams[0]); };
+  peer.onicecandidate = (e)=>{ if(e.candidate) push(ref(db,`salas/${codigoSala}/candidatos/${remoteUid}`),{from:user.uid,candidate:e.candidate.toJSON()}); };
 
-  peer.onicecandidate = (e)=>{
-    if(e.candidate) push(ref(db,'salas/'+codigoSala+'/candidatos/'+remoteUid), {from:user.uid, candidate:e.candidate.toJSON()});
-  };
+  peers[remoteUid]=peer;
 
-  peer.createOffer().then(o=>{
-    peer.setLocalDescription(o);
-    set(ref(db,'salas/'+codigoSala+'/offers/'+remoteUid+'/'+user.uid), o.toJSON());
-  });
-
-  peers[remoteUid] = peer;
+  if(isOffer){
+    peer.createOffer().then(offer=>{
+      peer.setLocalDescription(offer);
+      set(ref(db,`salas/${codigoSala}/offers/${remoteUid}/${user.uid}`),offer.toJSON());
+    });
+  }
 }
 
 // Escuchar ofertas
-const offersRef = ref(db,'salas/'+codigoSala+'/offers/'+user.uid);
-onValue(offersRef, snapshot=>{
-  const data = snapshot.val() || {};
+const offersRef=ref(db,`salas/${codigoSala}/offers/${user.uid}`);
+onValue(offersRef,snapshot=>{
+  const data=snapshot.val()||{};
   for(let fromUid in data){
-    const offer = data[fromUid];
-    if(!peers[fromUid]) {
-      const peer = new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
-      localStream.getTracks().forEach(t=>peer.addTrack(t, localStream));
-      peer.ontrack = (e)=>{if(!cameras[fromUid]) addVideo(fromUid,"Usuario",e.streams[0]);};
-      peer.onicecandidate = (e)=>{if(e.candidate) push(ref(db,'salas/'+codigoSala+'/candidatos/'+fromUid), {from:user.uid, candidate:e.candidate.toJSON()});};
-      peers[fromUid]=peer;
-    }
+    const offer=data[fromUid];
+    if(!peers[fromUid]) createPeer(fromUid,false);
     peers[fromUid].setRemoteDescription(new RTCSessionDescription(offer)).then(()=>{
       peers[fromUid].createAnswer().then(ans=>{
         peers[fromUid].setLocalDescription(ans);
-        set(ref(db,'salas/'+codigoSala+'/answers/'+fromUid+'/'+user.uid), ans.toJSON());
+        set(ref(db,`salas/${codigoSala}/answers/${fromUid}/${user.uid}`),ans.toJSON());
       });
     });
   }
 });
 
 // Escuchar respuestas
-const answersRef = ref(db,'salas/'+codigoSala+'/answers/'+user.uid);
-onValue(answersRef, snapshot=>{
-  const data = snapshot.val() || {};
+const answersRef=ref(db,`salas/${codigoSala}/answers/${user.uid}`);
+onValue(answersRef,snapshot=>{
+  const data=snapshot.val()||{};
   for(let fromUid in data){
-    const answer = data[fromUid];
-    if(peers[fromUid]) peers[fromUid].setRemoteDescription(new RTCSessionDescription(answer));
+    if(peers[fromUid]) peers[fromUid].setRemoteDescription(new RTCSessionDescription(data[fromUid]));
   }
 });
 
 // Escuchar candidatos ICE
-const candidatesRef = ref(db,'salas/'+codigoSala+'/candidatos/'+user.uid);
-onValue(candidatesRef, snapshot=>{
-  const data = snapshot.val() || {};
+const candidatesRef=ref(db,`salas/${codigoSala}/candidatos/${user.uid}`);
+onValue(candidatesRef,snapshot=>{
+  const data=snapshot.val()||{};
   for(let id in data){
-    const c = data[id];
+    const c=data[id];
     if(peers[c.from]) peers[c.from].addIceCandidate(new RTCIceCandidate(c.candidate));
   }
 });
