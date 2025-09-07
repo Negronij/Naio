@@ -35,7 +35,7 @@ let localStream = null;
 const peerConnections = {}; // Guarda las conexiones por UID del otro usuario
 
 const localVideo = document.getElementById('localVideo');
-const localDisplayName = document.getElementById('localDisplayName'); // Nombre local
+const localDisplayName = document.getElementById('localDisplayName');
 const localMicStatus = document.getElementById('localMicStatus');
 const localCamStatus = document.getElementById('localCamStatus');
 const localVideoContainer = document.getElementById('localVideoContainer');
@@ -58,6 +58,7 @@ onAuthStateChanged(auth, (user) => {
 
     document.getElementById('roomCodeDisplay').textContent = currentRoomCode;
 
+    // Solo unirse a la sala si hay un usuario autenticado y un código de sala
     joinRoom(currentRoomCode);
 
   } else {
@@ -72,16 +73,19 @@ async function joinRoom(codigo) {
         const salaRef = ref(db, 'salas/' + codigo);
         const usuariosSalaRef = ref(db, 'salas/' + codigo + '/usuarios');
 
-        await startMediaStream(); // Capturar medios locales primero
+        // Empezar a capturar los medios ANTES de unirse a la sala.
+        await startMediaStream();
 
+        // Añadir al usuario actual a la sala
         await set(ref(db, 'salas/' + codigo + '/usuarios/' + currentUser.uid), {
             displayName: currentUser.displayName,
-            isMicMuted: false,
-            isCamOff: false
+            isMicMuted: false, // Estado inicial: no muteado
+            isCamOff: false    // Estado inicial: cámara encendida
         });
 
         console.log(`Usuario ${currentUser.displayName} unido a la sala ${codigo}`);
         
+        // Configurar listener para saber si la sala se ha cerrado
         const salaActivaRef = ref(db, 'salas/' + codigo + '/activo');
         onValue(salaActivaRef, (snapshot) => {
             if (!snapshot.exists() || !snapshot.val()) {
@@ -90,16 +94,18 @@ async function joinRoom(codigo) {
             }
         }, { onlyOnce: false });
 
+        // Escuchar cambios en los participantes para manejar las conexiones P2P
         participantsListener = onValue(usuariosSalaRef, (snapshot) => {
-            updateParticipantListUI();
-            handleWebRTCSignaling(snapshot.val());
+            updateParticipantListUI(); // Actualiza la lista de participantes en el modal
+            handleWebRTCSignaling(snapshot.val()); // Maneja la lógica WebRTC
         });
 
+        // Configurar el listener de señalización DESPUÉS de unirse a la sala
         setupSignalingListener();
 
     } catch (error) {
-        console.error("Error al unirse a la sala o al escuchar participantes:", error);
-        alert("No pudimos unirnos a la sala. Verifica el código e inténtalo de nuevo.");
+        console.error("Error al unirse a la sala o al iniciar el stream:", error);
+        alert("No pudimos unirnos a la sala o acceder a tu cámara/micrófono. Verifica el código e inténtalo de nuevo.");
         window.location.href = "index.html";
     }
 }
@@ -115,6 +121,8 @@ function updateParticipantListUI() {
                 const user = usuarios[uid];
                 const div = document.createElement('div');
                 div.textContent = user.displayName || 'Usuario Desconocido';
+                
+                // Mostrar iconos de estado si el usuario está muteado o la cámara apagada
                 if (user.isMicMuted) {
                     const micOffIcon = document.createElement('img');
                     micOffIcon.src = 'mic_off.png';
@@ -140,9 +148,11 @@ function updateParticipantListUI() {
 
 window.leaveRoom = () => {
     if (currentUser && currentRoomCode) {
+        // Eliminar al usuario de la lista de participantes en Firebase
         remove(ref(db, 'salas/' + currentRoomCode + '/usuarios/' + currentUser.uid))
             .then(() => {
                 console.log(`Usuario ${currentUser.displayName} abandonó la sala ${currentRoomCode}`);
+                // Detener listeners y cerrar conexiones
                 if (participantsListener) {
                     off(ref(db, 'salas/' + currentRoomCode + '/usuarios'), participantsListener);
                     participantsListener = null;
@@ -154,7 +164,7 @@ window.leaveRoom = () => {
                 if (localStream) {
                     localStream.getTracks().forEach(track => track.stop());
                 }
-                window.location.href = "index.html";
+                window.location.href = "index.html"; // Redirigir al lobby
             })
             .catch((error) => {
                 console.error("Error al abandonar la sala:", error);
@@ -162,31 +172,33 @@ window.leaveRoom = () => {
                 window.location.href = "index.html";
             });
     } else {
-        window.location.href = "index.html";
+        window.location.href = "index.html"; // Si algo falla, ir al lobby
     }
 }
 
 // --- Lógica de Medios Locales (Cámara/Micrófono) ---
 async function startMediaStream() {
     try {
+        // Solicitar acceso a la cámara y micrófono
         localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        localVideo.srcObject = localStream;
-        localVideo.muted = true;
-        // El nombre local se mostrará en el contenedor de video local si la cámara está apagada
-        localDisplayName.textContent = currentUser.displayName; 
-        console.log("Stream de medios iniciado.");
+        localVideo.srcObject = localStream; // Mostrar tu propio video en el cuadro local
+        localVideo.muted = true; // Para evitar eco al escucharte a ti mismo
+        localDisplayName.textContent = currentUser.displayName; // Mostrar tu nombre debajo de tu video
+        console.log("Stream de medios locales iniciado.");
 
+        // Asegurarse de que los estados iniciales de micrófono/cámara se apliquen
         toggleMic(isMicMuted);
         toggleCam(isCamOff);
 
     } catch (error) {
         console.error("Error al acceder a la cámara o micrófono:", error);
-        alert("No se pudo acceder a tu cámara o micrófono. Por favor, verifica los permisos.");
-        isCamOff = true;
-        toggleCam(true);
+        alert("No se pudo acceder a tu cámara o micrófono. Por favor, verifica los permisos del navegador.");
+        isCamOff = true; // Si hay error, forzar que la cámara esté "apagada"
+        toggleCam(true); // Actualizar UI y estado
     }
 }
 
+// Actualiza el estado del micrófono y la cámara en Firebase para que otros lo vean
 function updateLocalMediaStatusInDB() {
     if (!currentUser || !currentRoomCode) return;
     set(ref(db, `salas/${currentRoomCode}/usuarios/${currentUser.uid}/isMicMuted`), isMicMuted);
@@ -195,57 +207,71 @@ function updateLocalMediaStatusInDB() {
 
 window.toggleMic = (forceState = null) => {
     isMicMuted = forceState !== null ? forceState : !isMicMuted;
-    if (localStream && localStream.getAudioTracks().length > 0) {
-        localStream.getAudioTracks().forEach(track => track.enabled = !isMicMuted);
-    }
+    // Habilitar o deshabilitar la pista de audio del stream local
+    localStream.getAudioTracks().forEach(track => track.enabled = !isMicMuted);
 
     const micButton = document.getElementById('micButton');
     const micIcon = micButton.querySelector('img');
 
+    // Cambiar el ícono del botón y el título
     micIcon.src = isMicMuted ? 'mic_off.png' : 'mic.png';
     micButton.title = isMicMuted ? 'Activar Audio' : 'Mutear Audio';
 
+    // Mostrar/ocultar el ícono de estado en tu propio cuadro de video
     localMicStatus.style.display = isMicMuted ? 'block' : 'none';
+    
+    // Aplicar/quitar clase para el color rojizo del fondo si está muteado
     if (isMicMuted) {
         localVideoContainer.classList.add('muted');
     } else {
         localVideoContainer.classList.remove('muted');
     }
 
-    updateLocalMediaStatusInDB();
+    updateLocalMediaStatusInDB(); // Actualizar estado en Firebase
 };
 
 window.toggleCam = (forceState = null) => {
     isCamOff = forceState !== null ? forceState : !isCamOff;
-    if (localStream && localStream.getVideoTracks().length > 0) {
-        localStream.getVideoTracks().forEach(track => track.enabled = !isCamOff);
-    }
+    // Habilitar o deshabilitar la pista de video del stream local
+    localStream.getVideoTracks().forEach(track => track.enabled = !isCamOff);
 
+    // Mostrar/ocultar el video y el nombre en tu propio cuadro
     localVideo.style.display = isCamOff ? 'none' : 'block';
-    // El nombre local se muestra siempre que la cámara esté apagada.
-    localDisplayName.style.display = isCamOff ? 'block' : 'none'; 
+    localDisplayName.style.display = isCamOff ? 'block' : 'none'; // Mostrar nombre si cámara apagada
 
     const camButton = document.getElementById('camButton');
     const camIcon = camButton.querySelector('img');
 
+    // Cambiar el ícono del botón y el título
     camIcon.src = isCamOff ? 'cam_off.png' : 'cam.png';
     camButton.title = isCamOff ? 'Encender Cámara' : 'Apagar Cámara';
 
+    // Mostrar/ocultar el ícono de estado en tu propio cuadro de video
     localCamStatus.style.display = isCamOff ? 'block' : 'none';
+    
+    // Aplicar/quitar clase para el estilo de cámara apagada
+    if (isCamOff) {
+        localVideoContainer.classList.add('camera-off');
+    } else {
+        localVideoContainer.classList.remove('camera-off');
+    }
 
-    updateLocalMediaStatusInDB();
+    updateLocalMediaStatusInDB(); // Actualizar estado en Firebase
 };
 
 // --- WebRTC Signaling and Connections ---
+
+// Maneja la creación y gestión de las conexiones Peer-to-Peer
 function handleWebRTCSignaling(currentParticipants) {
   if (!currentParticipants) return;
 
   const participantUIDs = Object.keys(currentParticipants);
 
-  // 1. Iniciar o mantener conexiones con participantes activos
+  // 1. Crear o mantener conexiones con participantes activos
   participantUIDs.forEach(uid => {
-    if (uid === currentUser.uid) return;
+    if (uid === currentUser.uid) return; // No crear conexión con uno mismo
 
+    // Si no existe una conexión para este usuario, crearla
     if (!peerConnections[uid]) {
       console.log(`Iniciando conexión con ${currentParticipants[uid].displayName} (${uid})`);
       peerConnections[uid] = createPeerConnection(uid, currentParticipants[uid].displayName);
@@ -255,9 +281,10 @@ function handleWebRTCSignaling(currentParticipants) {
   // 2. Eliminar conexiones con usuarios que ya no están en la sala
   for (const uid in peerConnections) {
     if (!participantUIDs.includes(uid)) {
-      console.log(`Cerrando conexión con un usuario (${uid}) que abandonó.`);
+      console.log(`Cerrando conexión con usuario que abandonó (${uid}).`);
       peerConnections[uid].close();
       delete peerConnections[uid];
+      // Eliminar el contenedor de video remoto de la interfaz
       const remoteVideoDiv = document.getElementById(`remoteVideoContainer-${uid}`);
       if (remoteVideoDiv) {
         remoteVideoDiv.remove();
@@ -265,38 +292,42 @@ function handleWebRTCSignaling(currentParticipants) {
     }
   }
 
-  // 3. Actualizar el estado de los medios remotos
+  // 3. Actualizar la interfaz de usuario para reflejar los estados de los participantes remotos
   for (const uid in currentParticipants) {
-      if (uid === currentUser.uid) continue;
+      if (uid === currentUser.uid) continue; // Ignorar al usuario actual
       const user = currentParticipants[uid];
       const remoteVideoDiv = document.getElementById(`remoteVideoContainer-${uid}`);
+      
       if (remoteVideoDiv) {
           const remoteVideo = remoteVideoDiv.querySelector('video');
-          const remoteDisplayName = remoteVideoDiv.querySelector('.remote-display-name-small'); // Usamos la clase pequeña
+          const remoteDisplayName = remoteVideoDiv.querySelector('.remote-display-name');
           const remoteMicStatus = remoteVideoDiv.querySelector('.remote-mic-status');
           const remoteCamStatus = remoteVideoDiv.querySelector('.remote-cam-status');
 
+          // Actualizar estado de la cámara
           if (user.isCamOff) {
-              if (remoteVideo) remoteVideo.style.display = 'none';
+              if (remoteVideo) remoteVideo.style.display = 'none'; // Ocultar video
               if (remoteDisplayName) {
-                  remoteDisplayName.textContent = user.displayName;
-                  remoteDisplayName.style.display = 'block'; // Mostrar nombre cuando la cámara está apagada
+                  remoteDisplayName.textContent = user.displayName; // Asegurar que el nombre se muestra
+                  remoteDisplayName.style.display = 'block';
               }
-              remoteVideoDiv.classList.add('camera-off');
+              remoteVideoDiv.classList.add('camera-off'); // Aplicar estilo visual
           } else {
-              if (remoteVideo) remoteVideo.style.display = 'block';
-              if (remoteDisplayName) remoteDisplayName.style.display = 'none'; // Ocultar nombre si la cámara está activa
+              if (remoteVideo) remoteVideo.style.display = 'block'; // Mostrar video
+              if (remoteDisplayName) remoteDisplayName.style.display = 'none'; // Ocultar nombre
               remoteVideoDiv.classList.remove('camera-off');
           }
 
+          // Actualizar estado del micrófono
           if (user.isMicMuted) {
-              remoteMicStatus.style.display = 'block';
-              remoteVideoDiv.classList.add('muted');
+              remoteMicStatus.style.display = 'block'; // Mostrar icono de muteado
+              remoteVideoDiv.classList.add('muted'); // Aplicar estilo visual (color rojizo)
           } else {
-              remoteMicStatus.style.display = 'none';
+              remoteMicStatus.style.display = 'none'; // Ocultar icono de muteado
               remoteVideoDiv.classList.remove('muted');
           }
 
+          // Mostrar icono de cámara apagada si aplica
           if (user.isCamOff) {
               remoteCamStatus.style.display = 'block';
           } else {
@@ -306,14 +337,16 @@ function handleWebRTCSignaling(currentParticipants) {
   }
 }
 
+// Crea una nueva conexión Peer-to-Peer para un usuario remoto
 function createPeerConnection(remoteUserUID, remoteUserName) {
     const pc = new RTCPeerConnection({
         iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun.l.google.com:19302' }, // Servidor STUN para ayudar a descubrir IPs públicas
         ]
     });
 
-    // Agregar el stream local al PeerConnection
+    // --- Importante: Añadir el stream local a la conexión ---
+    // Esto es lo que permite que tu audio y video sean enviados al otro participante.
     if (localStream) {
         localStream.getTracks().forEach(track => {
             pc.addTrack(track, localStream);
@@ -322,7 +355,7 @@ function createPeerConnection(remoteUserUID, remoteUserName) {
         console.warn("localStream no está disponible al crear PeerConnection para", remoteUserName);
     }
 
-    // Crear contenedor para el video remoto
+    // Crear el elemento de video y contenedor para el participante remoto
     const remoteVideoDiv = document.createElement('div');
     remoteVideoDiv.id = `remoteVideoContainer-${remoteUserUID}`;
     remoteVideoDiv.className = 'remote-video-container';
@@ -330,38 +363,48 @@ function createPeerConnection(remoteUserUID, remoteUserName) {
     const videoElement = document.createElement('video');
     videoElement.id = `remoteVideo-${remoteUserUID}`;
     videoElement.autoplay = true;
-    videoElement.playsinline = true;
+    videoElement.playsinline = true; // Necesario para que funcione en algunos móviles
     videoElement.className = 'remote-video';
 
-    // Nombre pequeño en la esquina inferior izquierda
+    // Elemento para mostrar el nombre si la cámara está apagada
     const displayNameElement = document.createElement('div');
-    displayNameElement.className = 'remote-display-name-small'; // Usamos la clase pequeña
+    displayNameElement.className = 'remote-display-name';
     displayNameElement.textContent = remoteUserName;
-    displayNameElement.style.display = 'none'; // Oculto por defecto, se muestra si la cámara está apagada
+    displayNameElement.style.display = 'none'; // Oculto por defecto
 
+    // Icono para el estado del micrófono
     const micStatusIcon = document.createElement('img');
-    micStatusIcon.src = 'mic_off.png';
+    micStatusIcon.src = 'mic_off.png'; // Icono por defecto de muteado
     micStatusIcon.alt = 'Mic Muteado';
     micStatusIcon.className = 'status-icon remote-mic-status';
-    micStatusIcon.style.display = 'none';
+    micStatusIcon.style.display = 'none'; // Oculto por defecto
 
+    // Icono para el estado de la cámara
     const camStatusIcon = document.createElement('img');
-    camStatusIcon.src = 'cam_off.png';
+    camStatusIcon.src = 'cam_off.png'; // Icono por defecto de cámara apagada
     camStatusIcon.alt = 'Cámara Apagada';
     camStatusIcon.className = 'status-icon remote-cam-status';
-    camStatusIcon.style.display = 'none';
+    camStatusIcon.style.display = 'none'; // Oculto por defecto
 
+    // Añadir elementos al contenedor del video remoto
     remoteVideoDiv.appendChild(videoElement);
-    remoteVideoDiv.appendChild(displayNameElement); // Añadimos el nombre pequeño
+    remoteVideoDiv.appendChild(displayNameElement);
     remoteVideoDiv.appendChild(micStatusIcon);
     remoteVideoDiv.appendChild(camStatusIcon);
+    // Añadir el nuevo contenedor al área de videos remotos
     document.getElementById('remoteVideoContainer').appendChild(remoteVideoDiv);
 
+    // --- Manejar el evento 'ontrack' ---
+    // Este evento se dispara cuando se recibe un nuevo stream de audio/video del otro par.
     pc.ontrack = (event) => {
         console.log(`Track remoto recibido de ${remoteUserName}`);
+        // Asignar el stream recibido al elemento de video
         videoElement.srcObject = event.streams[0];
     };
 
+    // --- Manejar el evento 'onicecandidate' ---
+    // ICE (Interactive Connectivity Establishment) es un protocolo que ayuda a establecer conexiones P2P.
+    // Cuando se encuentra un candidato ICE, lo enviamos al otro par.
     pc.onicecandidate = (event) => {
         if (event.candidate) {
             sendSignalingMessage(remoteUserUID, {
@@ -371,12 +414,14 @@ function createPeerConnection(remoteUserUID, remoteUserName) {
         }
     };
     
-    return pc;
+    return pc; // Devolver la conexión creada
 }
 
 
+// Configura el listener para recibir mensajes de señalización (ofertas, respuestas, candidatos)
 function setupSignalingListener() {
     if (!currentRoomCode || !currentUser) return;
+    // Referencia a los mensajes dirigidos a mí
     const mySignalingRef = ref(db, `salas/${currentRoomCode}/signaling/${currentUser.uid}`);
 
     onValue(mySignalingRef, async (snapshot) => {
@@ -387,65 +432,79 @@ function setupSignalingListener() {
                 
                 let pc = peerConnections[senderUID];
                 
+                // Si no tenemos una conexión activa con el remitente, la creamos.
                 if (!pc) {
+                    // Necesitamos obtener los datos del remitente para crear la PeerConnection
                     const senderData = await get(ref(db, `salas/${currentRoomCode}/usuarios/${senderUID}`));
                     if (senderData.exists()) {
                         pc = createPeerConnection(senderUID, senderData.val().displayName || 'Usuario Desconocido');
                         peerConnections[senderUID] = pc;
                     } else {
                         console.warn("Datos del remitente no encontrados para oferta:", senderUID);
-                        continue;
+                        continue; // Si no tenemos datos, no podemos continuar con esta conexión.
                     }
                 }
 
                 try {
+                    // Procesar el tipo de mensaje de señalización
                     if (signalingMessage.type === 'offer') {
+                        // Recibimos una oferta, la aceptamos y enviamos una respuesta.
                         await pc.setRemoteDescription(new RTCSessionDescription(signalingMessage.sdp));
                         const answer = await pc.createAnswer();
                         await pc.setLocalDescription(answer);
                         sendSignalingMessage(senderUID, { type: 'answer', sdp: pc.localDescription });
                     } else if (signalingMessage.type === 'answer') {
+                        // Recibimos una respuesta a nuestra oferta.
                         await pc.setRemoteDescription(new RTCSessionDescription(signalingMessage.sdp));
                     } else if (signalingMessage.type === 'candidate') {
+                        // Recibimos un candidato ICE para mejorar la conexión.
                         await pc.addIceCandidate(new RTCIceCandidate(signalingMessage.candidate));
                     }
                 } catch (error) {
                     console.error(`Error procesando mensaje de señalización de ${senderUID} (${signalingMessage.type}):`, error);
                 }
 
+                // Una vez procesado el mensaje, lo eliminamos de Firebase para no procesarlo de nuevo.
                 remove(ref(db, `salas/${currentRoomCode}/signaling/${currentUser.uid}/${senderUID}`));
             }
         }
     });
 }
 
+// Envía un mensaje de señalización a un usuario específico.
 function sendSignalingMessage(targetUserUID, message) {
   if (!currentRoomCode || !currentUser) return;
+  // Referencia al lugar donde el usuario destino recibirá el mensaje
   const messagesRef = ref(db, `salas/${currentRoomCode}/signaling/${targetUserUID}/${currentUser.uid}`);
   set(messagesRef, message)
     .catch(error => console.error("Error enviando mensaje de señalización:", error));
 }
 
 
+// Limpiar listeners y cerrar conexiones al salir de la página
 window.addEventListener('beforeunload', () => {
     if (participantsListener) {
         off(ref(db, 'salas/' + currentRoomCode + '/usuarios'), participantsListener);
     }
+    // Cerrar todas las conexiones Peer-to-Peer activas
     for (const uid in peerConnections) {
         peerConnections[uid].close();
     }
+    // Detener el stream de medios local
     if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
     }
+    // Eliminar al usuario de la sala si aún está conectado
     if (currentUser && currentRoomCode) {
         remove(ref(db, 'salas/' + currentRoomCode + '/usuarios/' + currentUser.uid));
     }
 });
 
 
+// --- Funciones auxiliares para el modal de participantes en call.html ---
 function verParticipantesModal() {
     const participantesListDiv = document.getElementById('participantsListCall');
-    participantesListDiv.innerHTML = '';
+    participantesListDiv.innerHTML = ''; // Limpiar lista anterior
 
     const salaRef = ref(db, 'salas/' + currentRoomCode + '/usuarios');
     get(salaRef).then((snapshot) => {
@@ -455,6 +514,7 @@ function verParticipantesModal() {
                 const user = usuarios[uid];
                 const div = document.createElement('div');
                 div.textContent = user.displayName || 'Usuario Desconocido';
+                // Añadir iconos de estado si aplica
                 if (user.isMicMuted) {
                     const micOffIcon = document.createElement('img');
                     micOffIcon.src = 'mic_off.png';
@@ -487,13 +547,14 @@ function cerrarParticipantesModal() {
 </script>
 
 <style>
+/* Estilos base y variables CSS */
 :root {
-  --primary-color: #FF6F00;
-  --background-dark: #0f0f1a;
-  --text-light: #e0e0e0;
-  --card-background: rgba(255, 255, 255, 0.08);
-  --participant-bg: rgba(255, 255, 255, 0.1);
-  --muted-red: #e53935;
+  --primary-color: #FF6F00; /* Naranja principal */
+  --background-dark: #0f0f1a; /* Fondo oscuro */
+  --text-light: #e0e0e0; /* Texto claro */
+  --card-background: rgba(255, 255, 255, 0.08); /* Fondo para tarjetas/botones */
+  --participant-bg: rgba(255, 255, 255, 0.1); /* Fondo para cuadros de video */
+  --muted-red: #e53935; /* Rojo para indicar estado muteado */
 }
 
 body {
@@ -504,13 +565,14 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: flex-start;
-  min-height: 100vh;
-  overflow-y: auto;
+  justify-content: flex-start; /* Alineado arriba para contenido largo */
+  min-height: 100vh; /* Altura mínima para ocupar toda la pantalla */
+  overflow-y: auto; /* Permitir scroll si el contenido excede la altura */
   padding: 20px;
-  box-sizing: border-box;
+  box-sizing: border-box; /* Incluir padding en el tamaño total */
 }
 
+/* Header de la sala */
 .header {
   width: 100%;
   display: flex;
@@ -538,144 +600,115 @@ body {
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
 }
 
+/* Contenedor principal de la llamada */
 .call-container {
   width: 100%;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 20px;
-  max-width: 1200px;
+  max-width: 1200px; /* Ancho máximo para no expandirse demasiado */
 }
 
+/* Área donde se muestran los videos */
 .video-area {
   width: 100%;
   display: grid;
+  /* Crea columnas responsivas: cada video tendrá al menos 280px de ancho */
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 15px;
-  justify-content: center;
-  align-items: start;
+  gap: 15px; /* Espacio entre videos */
+  justify-content: center; /* Centrar los videos */
+  align-items: start; /* Alinear elementos al inicio si no ocupan todo el espacio */
 }
 
-/* Contenedor de video local */
-#localVideoContainer {
-  position: relative;
+/* Contenedor para el video local y remotos */
+#localVideoContainer, .remote-video-container {
+  position: relative; /* Para posicionar elementos internos (nombre, iconos) */
   background-color: var(--participant-bg);
-  border-radius: 15px;
-  overflow: hidden;
+  border-radius: 15px; /* Bordes redondeados */
+  overflow: hidden; /* Asegura que el video no se salga de los bordes */
   display: flex;
   flex-direction: column;
   justify-content: center;
   align-items: center;
-  aspect-ratio: 16 / 9;
-  min-width: 280px;
+  aspect-ratio: 16 / 9; /* Mantiene la proporción del video */
+  min-width: 280px; /* Ancho mínimo */
   box-shadow: 0 4px 15px rgba(0,0,0,0.4);
-  transition: background-color 0.3s ease, border 0.3s ease;
-  border: 2px solid transparent;
+  transition: background-color 0.3s ease, border 0.3s ease; /* Transición suave para cambios */
+  border: 2px solid transparent; /* Borde inicial transparente */
 }
 
-/* Contenedores de video remotos */
-.remote-video-container {
-  position: relative;
-  background-color: var(--participant-bg);
-  border-radius: 15px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  aspect-ratio: 16 / 9;
-  min-width: 280px;
-  box-shadow: 0 4px 15px rgba(0,0,0,0.4);
-  transition: background-color 0.3s ease, border 0.3s ease;
-  border: 2px solid transparent;
-}
-
+/* Estilo cuando el usuario está muteado */
 #localVideoContainer.muted, .remote-video-container.muted {
-    background-color: rgba(var(--muted-red), 0.3);
-    border: 2px solid var(--muted-red);
+    background-color: rgba(var(--muted-red), 0.3); /* Fondo semitransparente rojizo */
+    border: 2px solid var(--muted-red); /* Borde rojizo */
 }
 
+/* Estilo cuando la cámara está apagada */
 #localVideoContainer.camera-off, .remote-video-container.camera-off {
-    background-color: rgba(100, 100, 100, 0.2);
+    background-color: rgba(100, 100, 100, 0.2); /* Fondo grisáceo */
 }
 
-
+/* El elemento video */
 #localVideo, .remote-video {
   width: 100%;
   height: 100%;
-  object-fit: cover;
-  transform: scaleX(-1); /* Voltear horizontalmente para que se vea como un espejo */
-  display: block; /* Visible por defecto */
+  object-fit: cover; /* Cubre el contenedor manteniendo la relación de aspecto */
+  transform: scaleX(-1); /* Refleja el video horizontalmente (estándar para video local) */
+  display: block; /* Asegura que se muestre */
 }
+/* Aplica el mismo reflejo a los videos remotos para consistencia */
 .remote-video-container .remote-video {
-    transform: scaleX(-1); /* Voltear también los videos remotos para consistencia */
+    transform: scaleX(-1);
 }
 
-
-/* Nombre del usuario LOCAL (se muestra si la cámara está apagada) */
-#localDisplayName {
-  position: absolute;
+/* Nombre del usuario (visible cuando la cámara está apagada) */
+#localDisplayName, .remote-display-name {
+  position: absolute; /* Posicionado sobre el video */
   top: 50%;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%); /* Centra el texto */
   font-size: 1.8em;
   font-weight: 700;
   color: white;
-  text-shadow: 0 2px 5px rgba(0,0,0,0.6);
-  z-index: 5;
+  text-shadow: 0 2px 5px rgba(0,0,0,0.6); /* Sombra para legibilidad */
+  z-index: 5; /* Asegura que esté sobre el video */
   padding: 10px 20px;
   background: rgba(0, 0, 0, 0.4);
   border-radius: 10px;
   display: none; /* Oculto por defecto */
   text-align: center;
-  pointer-events: none;
+  pointer-events: none; /* No interfiere con eventos del ratón */
 }
 
-/* Nombre PEQUEÑO para participantes REMOTOS (siempre visible si la cámara está apagada) */
-.remote-display-name-small {
-  position: absolute;
-  bottom: 10px; /* Abajo */
-  left: 10px; /* A la izquierda */
-  font-size: 0.9em; /* Más pequeño */
-  font-weight: 700;
-  color: white;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.6);
-  z-index: 10;
-  padding: 4px 8px; /* Padding pequeño */
-  background: rgba(0, 0, 0, 0.5);
-  border-radius: 6px;
-  display: none; /* Oculto por defecto */
-  text-align: center;
-  pointer-events: none;
-}
-
-/* Iconos de estado (mute, cámara apagada) */
+/* Iconos de estado (micrófono muteado, cámara apagada) */
 .status-icon {
-    position: absolute;
+    position: absolute; /* Posicionado sobre el video */
     top: 10px;
     right: 10px;
     height: 30px;
     width: 30px;
-    background-color: rgba(0, 0, 0, 0.5);
-    border-radius: 50%;
+    background-color: rgba(0, 0, 0, 0.5); /* Fondo semitransparente */
+    border-radius: 50%; /* Forma circular */
     padding: 5px;
-    z-index: 10;
+    z-index: 10; /* Sobre el video y nombre */
     display: none; /* Oculto por defecto */
     box-shadow: 0 2px 5px rgba(0,0,0,0.3);
 }
 
+/* Asegura que los iconos de estado no se reflejen */
 .status-icon.remote-cam-status, .status-icon.local-cam-status {
     transform: none;
 }
 
-
+/* Controles de la llamada (botones) */
 .controls {
   width: 100%;
   display: flex;
   justify-content: center;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 15px;
+  flex-wrap: wrap; /* Permite que los botones se acomoden en varias líneas */
+  gap: 15px; /* Espacio entre botones */
   margin-top: 20px;
 }
 
@@ -696,7 +729,7 @@ body {
 }
 
 .controls button:hover {
-  transform: translateY(-3px) scale(1.03);
+  transform: translateY(-3px) scale(1.03); /* Efecto al pasar el ratón */
   box-shadow: 0 4px 15px rgba(255, 111, 0, 0.4), 0 6px 20px rgba(0, 0, 0, 0.3);
 }
 
@@ -705,33 +738,34 @@ body {
     width: 24px;
 }
 
+/* Botón de abandonar llamada */
 .controls .leave-button {
-  background-color: #e53935;
+  background-color: #e53935; /* Rojo */
   color: white;
 }
 .controls .leave-button:hover {
-  background-color: #f44336;
+  background-color: #f44336; /* Rojo más brillante */
   box-shadow: 0 4px 15px rgba(229, 57, 53, 0.4), 0 6px 20px rgba(0, 0, 0, 0.3);
 }
 
-/* Modal de participantes */
+/* Modal para mostrar la lista de participantes */
 #participantsModalCall {
-  position: fixed;
+  position: fixed; /* Cubre toda la pantalla */
   top: 0;
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(15, 15, 26, 0.95);
-  display: none;
+  background: rgba(15, 15, 26, 0.95); /* Fondo oscuro semitransparente */
+  display: none; /* Oculto por defecto */
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  z-index: 1000;
-  backdrop-filter: blur(5px);
+  z-index: 1000; /* Asegura que esté sobre todo lo demás */
+  backdrop-filter: blur(5px); /* Efecto de desenfoque al fondo */
 }
 
 #participantsModalCall .modal-content {
-  background: rgba(30, 30, 50, 0.8);
+  background: rgba(30, 30, 50, 0.8); /* Fondo del contenido del modal */
   padding: 30px;
   border-radius: 15px;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
@@ -739,7 +773,7 @@ body {
   flex-direction: column;
   align-items: center;
   width: 90%;
-  max-width: 450px;
+  max-width: 450px; /* Ancho máximo del modal */
   text-align: center;
 }
 
@@ -753,12 +787,12 @@ body {
 #participantsListCall {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: 40vh;
-  overflow-y: auto;
+  gap: 10px; /* Espacio entre elementos de la lista */
+  max-height: 40vh; /* Altura máxima para permitir scroll */
+  overflow-y: auto; /* Scroll vertical si el contenido excede max-height */
   margin-bottom: 25px;
   width: 100%;
-  padding-right: 10px;
+  padding-right: 10px; /* Espacio para la barra de scroll */
 }
 
 .participant-call-item {
@@ -771,12 +805,13 @@ body {
   transition: background-color 0.2s ease;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: space-between; /* Alinea el contenido a ambos lados */
 }
 .participant-call-item img {
-    margin-left: 10px;
+    margin-left: 10px; /* Espacio entre el texto y los iconos de estado */
 }
 
+/* Botón de cerrar del modal */
 #participantsModalCall .modal-content button {
   background: var(--primary-color);
   color: white;
@@ -784,26 +819,27 @@ body {
   padding: 12px 30px;
 }
 #participantsModalCall .modal-content button:hover {
-  background: #FF8F33;
+  background: #FF8F33; /* Color hover para el botón de cerrar */
 }
 
+/* Media Query para ajustar el diseño en pantallas pequeñas (móviles) */
 @media (max-width: 768px) {
   .header {
-    flex-direction: column;
+    flex-direction: column; /* Apila los elementos del header verticalmente */
     gap: 10px;
   }
   .call-container {
     gap: 15px;
   }
   .video-area {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr; /* Una sola columna para videos */
   }
   .controls {
-    flex-wrap: wrap;
+    flex-wrap: wrap; /* Los botones de control se envuelven */
   }
   .controls button {
-    width: 100%;
-    justify-content: center;
+    width: 100%; /* Los botones de control ocupan todo el ancho */
+    justify-content: center; /* Centra el contenido del botón */
   }
 }
 </style>
@@ -820,11 +856,9 @@ body {
   <div class="video-area">
     <div id="localVideoContainer">
       <video id="localVideo" autoplay playsinline></video>
-      <div id="localDisplayName" class="display-name"></div> <img id="localMicStatus" src="mic_off.png" alt="Muteado" class="status-icon local-mic-status">
-      <img id="localCamStatus" src="cam_off.png" alt="Cámara Apagada" class="status-icon local-cam-status">
-    </div>
+      <div id="localDisplayName" class="display-name"></div> <img id="localMicStatus" src="mic_off.png" alt="Muteado" class="status-icon local-mic-status"> <img id="localCamStatus" src="cam_off.png" alt="Cámara Apagada" class="status-icon local-cam-status"> </div>
     <div id="remoteVideoContainer">
-      </div>
+    </div>
   </div>
 
   <div class="controls">
